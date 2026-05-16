@@ -59,6 +59,7 @@ CONFIG_KEYS = {
     "steps",
     "guide_scale",
     "shift",
+    "refiner_start",
     "seed",
     "output_path",
     "fps",
@@ -215,6 +216,21 @@ def _parse_lora_args(lora_list, name: str):
     return parsed
 
 
+def _resolve_refiner_start(refiner_start: float | int, steps: int) -> tuple[int, int]:
+    """Resolve refiner_start to one-based LNE start step and HNE step count."""
+    value = float(refiner_start)
+    if 0 < value < 1:
+        high_noise_steps = math.ceil(steps * value)
+        return high_noise_steps + 1, high_noise_steps
+    if value.is_integer() and 1 <= value <= steps + 1:
+        lne_start_step = int(value)
+        return lne_start_step, lne_start_step - 1
+    raise ValueError(
+        "--refiner-start must be a fraction in (0, 1) or an integer step in "
+        f"[1, {steps + 1}]"
+    )
+
+
 def _resolve_run_args(
     parser: argparse.ArgumentParser,
     args: argparse.Namespace,
@@ -318,6 +334,7 @@ def _run_generation_args(args: argparse.Namespace) -> None:
             steps=args.steps,
             guide_scale=guide_scale,
             shift=args.shift,
+            refiner_start=args.refiner_start,
             seed=seed,
             output_path=output_path,
             fps=args.fps,
@@ -403,6 +420,7 @@ def generate_video(
     steps: int = None,
     guide_scale: str | float | tuple = None,
     shift: float = None,
+    refiner_start: float | int | None = None,
     seed: int = -1,
     output_path: str = "output.mp4",
     fps: int | None = None,
@@ -431,6 +449,9 @@ def generate_video(
         steps: Number of diffusion steps (None = use config default)
         guide_scale: Guidance scale: float for single, (low,high) for dual (None = config default)
         shift: Noise schedule shift (None = use config default)
+        refiner_start: Optional dual-model low-noise start point. Fractions in
+            (0, 1) mean ceil(steps * value) high-noise steps; integer values
+            use one-based low-noise start numbering.
         seed: Random seed (-1 for random)
         output_path: Output video path
         fps: Output frames per second (None = use config default)
@@ -554,6 +575,14 @@ def generate_video(
     if guide_scale is None:
         guide_scale = config.sample_guide_scale
     output_fps = fps if fps is not None else config.sample_fps
+    resolved_refiner_start = None
+    high_noise_steps = None
+    if refiner_start is not None:
+        if not is_dual:
+            raise ValueError("--refiner-start is only supported for dual-model Wan models")
+        resolved_refiner_start, high_noise_steps = _resolve_refiner_start(
+            refiner_start, steps
+        )
 
     # Normalize guide_scale
     if isinstance(guide_scale, (int, float)):
@@ -606,6 +635,13 @@ def generate_video(
     print(
         f"  Steps: {steps}, Guide: {guide_scale}, Shift: {shift}, Solver: {scheduler}"
     )
+    if resolved_refiner_start is not None:
+        low_noise_steps = steps - high_noise_steps
+        print(
+            f"  Refiner start: step {resolved_refiner_start} "
+            f"(HNE {high_noise_steps} step{'s' if high_noise_steps != 1 else ''}, "
+            f"LNE {low_noise_steps} step{'s' if low_noise_steps != 1 else ''})"
+        )
     if cfg_disabled:
         print(f"  CFG: disabled (guide_scale≤1 → B=1 fast path, 2x denoising speedup)")
     print(f"{Colors.RESET}")
@@ -914,7 +950,12 @@ def generate_video(
 
         # Select model, cached K/V, and precomputed RoPE
         if is_dual:
-            if timestep_val >= boundary:
+            use_high_noise = (
+                i < high_noise_steps
+                if high_noise_steps is not None
+                else timestep_val >= boundary
+            )
+            if use_high_noise:
                 model = high_noise_model
                 kv = cross_kv_high
                 rcs = rope_cos_sin_high
@@ -946,9 +987,7 @@ def generate_video(
             y_arg = [y_i2v] if is_i2v_channel_concat else None
 
             if is_dual:
-                ctx = (
-                    context_cond_high if timestep_val >= boundary else context_cond_low
-                )
+                ctx = context_cond_high if use_high_noise else context_cond_low
             else:
                 ctx = context_cond
             preds = _call(
@@ -965,7 +1004,7 @@ def generate_video(
         else:
             # CFG: batch cond + uncond into single B=2 forward pass
             if is_dual:
-                gs = guide_scale[1] if timestep_val >= boundary else guide_scale[0]
+                gs = guide_scale[1] if use_high_noise else guide_scale[0]
             else:
                 gs = (
                     guide_scale
@@ -989,7 +1028,7 @@ def generate_video(
             ctx = (
                 context_cfg
                 if not is_dual
-                else (context_cfg_high if timestep_val >= boundary else context_cfg_low)
+                else (context_cfg_high if use_high_noise else context_cfg_low)
             )
             preds = _call(
                 [latents, latents],
@@ -1230,6 +1269,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help="Noise schedule shift (default: from config)",
+    )
+    parser.add_argument(
+        "--refiner-start",
+        type=float,
+        default=None,
+        help=(
+            "Dual-model low-noise start. Fractions in (0, 1) use "
+            "ceil(steps*value) high-noise steps; integers 1..steps+1 are "
+            "one-based low-noise start steps."
+        ),
     )
     parser.add_argument("--seed", type=int, default=-1, help="Random seed")
     parser.add_argument(

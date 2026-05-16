@@ -185,6 +185,27 @@ def test_config_resolution_applies_cli_overrides(tmp_path):
     assert runs[0].output_path == "config.mp4"
 
 
+def test_config_resolution_accepts_refiner_start(tmp_path):
+    from mlx_video.models.wan_2.generate import _resolve_generation_runs, build_parser
+
+    path = tmp_path / "run.json"
+    path.write_text(
+        json.dumps(
+            {
+                "model_dir": "model",
+                "prompt": "prompt",
+                "steps": 8,
+                "refiner_start": 0.125,
+            }
+        )
+    )
+    parser = build_parser()
+    args = parser.parse_args(["--config", str(path)])
+    runs = _resolve_generation_runs(parser, args, set())
+
+    assert runs[0].refiner_start == 0.125
+
+
 def test_config_resolution_detects_equals_style_cli_overrides(tmp_path):
     from mlx_video.models.wan_2.generate import (
         _explicit_cli_dests,
@@ -277,6 +298,46 @@ def test_parse_guide_scale_rejects_empty_config_list():
 
     with pytest.raises(SystemExit, match="guide_scale must not be empty"):
         _parse_guide_scale([])
+
+
+def test_wan_parser_accepts_refiner_start():
+    from mlx_video.models.wan_2.generate import build_parser
+
+    args = build_parser().parse_args(
+        [
+            "--model-dir",
+            "model",
+            "--prompt",
+            "prompt",
+            "--refiner-start",
+            "0.125",
+        ]
+    )
+
+    assert args.refiner_start == 0.125
+
+
+def test_resolve_refiner_start_accepts_x2v_fraction():
+    from mlx_video.models.wan_2.generate import _resolve_refiner_start
+
+    assert _resolve_refiner_start(0.125, 8) == (2, 1)
+    assert _resolve_refiner_start(0.2, 8) == (3, 2)
+
+
+def test_resolve_refiner_start_accepts_one_based_steps():
+    from mlx_video.models.wan_2.generate import _resolve_refiner_start
+
+    assert _resolve_refiner_start(1, 8) == (1, 0)
+    assert _resolve_refiner_start(2, 8) == (2, 1)
+    assert _resolve_refiner_start(9, 8) == (9, 8)
+
+
+def test_resolve_refiner_start_rejects_ambiguous_or_out_of_range_values():
+    from mlx_video.models.wan_2.generate import _resolve_refiner_start
+
+    for value in (0, 1.5, 10, -0.25):
+        with pytest.raises(ValueError, match="--refiner-start"):
+            _resolve_refiner_start(value, 8)
 
 
 def test_wan_parser_accepts_scheduler_choices():
