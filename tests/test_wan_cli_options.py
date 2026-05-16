@@ -58,6 +58,56 @@ def test_wan_parser_rejects_unknown_scheduler():
         )
 
 
+def test_wan_parser_accepts_noise_source_options():
+    from mlx_video.models.wan_2.generate import build_parser
+
+    args = build_parser().parse_args(
+        [
+            "--model-dir",
+            "model",
+            "--prompt",
+            "prompt",
+            "--noise-source",
+            "torch",
+            "--torch-python",
+            "/usr/bin/python3",
+        ]
+    )
+
+    assert args.noise_source == "torch"
+    assert args.torch_python == "/usr/bin/python3"
+
+
+def test_wan_parser_rejects_unknown_noise_source():
+    from mlx_video.models.wan_2.generate import build_parser
+
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(
+            [
+                "--model-dir",
+                "model",
+                "--prompt",
+                "prompt",
+                "--noise-source",
+                "unknown",
+            ]
+        )
+
+
+def test_torch_randn_is_seed_deterministic():
+    pytest.importorskip("torch")
+
+    from mlx_video.models.wan_2.generate import _torch_randn
+
+    first = np.array(_torch_randn((2, 3), 123))
+    second = np.array(_torch_randn((2, 3), 123))
+    different = np.array(_torch_randn((2, 3), 124))
+
+    np.testing.assert_allclose(first, second)
+    assert first.shape == (2, 3)
+    assert not np.allclose(first, different)
+
+
 def test_wan_parser_accepts_tiling_modes():
     from mlx_video.models.wan_2.generate import build_parser
 

@@ -246,6 +246,8 @@ python -m mlx_video.wan2.generate \
 | `--iterations` | `1` | Run multiple generations; when greater than 1, `--output-path` is treated as an output directory |
 | `--iteration-seed` | `increment` | Seed strategy for iterations: `same`, `increment`, or `random` |
 | `--scheduler` | `unipc` | Solver: `euler`, `dpm++`, or `unipc` |
+| `--noise-source` | `mlx` | Initial latent noise source: `mlx` or `torch`; use `torch` for PyTorch parity checks |
+| `--torch-python` | active Python | Python executable used to generate Torch noise for `--noise-source torch` |
 | `--trim-first-frames` | `0` | Drop N leading frames (fixes first-frame artifacts on 14B models) |
 | `--tiling` | `auto` | VAE tiling: `auto`, `none`, `spatial`, `temporal` |
 
