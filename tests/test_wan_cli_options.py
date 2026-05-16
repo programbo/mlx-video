@@ -1,6 +1,7 @@
 """Tests for Wan generation CLI option plumbing."""
 
 import argparse
+import json
 
 import numpy as np
 import pytest
@@ -21,6 +22,261 @@ def test_wan_parser_accepts_output_fps():
     )
 
     assert args.fps == 24
+
+
+def test_wan_parser_accepts_repeatable_config():
+    from mlx_video.models.wan_2.generate import build_parser
+
+    args = build_parser().parse_args(
+        [
+            "--config",
+            "first.yaml",
+            "--config",
+            "second.json",
+            "--config",
+            "third.yml",
+        ]
+    )
+
+    assert args.config == ["first.yaml", "second.json", "third.yml"]
+
+
+def test_wan_parser_allows_model_dir_and_prompt_from_config():
+    from mlx_video.models.wan_2.generate import build_parser
+
+    args = build_parser().parse_args(["--config", "run.yaml"])
+
+    assert args.config == ["run.yaml"]
+    assert args.model_dir is None
+    assert args.prompt is None
+
+
+def test_load_generation_config_supports_json(tmp_path):
+    from mlx_video.models.wan_2.generate import _load_generation_config
+
+    path = tmp_path / "run.json"
+    path.write_text(
+        json.dumps(
+            {
+                "model_dir": "model",
+                "prompt": "prompt",
+                "width": 832,
+                "lora": [["lora.safetensors", 0.8]],
+            }
+        )
+    )
+
+    assert _load_generation_config(path) == {
+        "model_dir": "model",
+        "prompt": "prompt",
+        "width": 832,
+        "lora": [["lora.safetensors", 0.8]],
+    }
+
+
+def test_load_generation_config_supports_yaml(tmp_path):
+    from mlx_video.models.wan_2.generate import _load_generation_config
+
+    path = tmp_path / "run.yaml"
+    path.write_text(
+        "\n".join(
+            [
+                "model_dir: model",
+                "prompt: prompt",
+                "height: 704",
+                "guide_scale: '3.0,4.0'",
+            ]
+        )
+    )
+
+    assert _load_generation_config(path) == {
+        "model_dir": "model",
+        "prompt": "prompt",
+        "height": 704,
+        "guide_scale": "3.0,4.0",
+    }
+
+
+def test_load_generation_config_rejects_unknown_key(tmp_path):
+    from mlx_video.models.wan_2.generate import _load_generation_config
+
+    path = tmp_path / "run.json"
+    path.write_text(json.dumps({"model_dir": "model", "prompt": "prompt", "bad": True}))
+
+    with pytest.raises(SystemExit, match="unknown config key"):
+        _load_generation_config(path)
+
+
+def test_load_generation_config_rejects_non_string_unknown_yaml_key(tmp_path):
+    from mlx_video.models.wan_2.generate import _load_generation_config
+
+    path = tmp_path / "run.yaml"
+    path.write_text("1: bad\nmodel_dir: model\nprompt: prompt\n")
+
+    with pytest.raises(SystemExit, match="unknown config key"):
+        _load_generation_config(path)
+
+
+def test_load_generation_config_rejects_unsupported_extension(tmp_path):
+    from mlx_video.models.wan_2.generate import _load_generation_config
+
+    path = tmp_path / "run.toml"
+    path.write_text("model_dir = 'model'")
+
+    with pytest.raises(SystemExit, match="Unsupported config extension"):
+        _load_generation_config(path)
+
+
+def test_load_generation_config_rejects_missing_file(tmp_path):
+    from mlx_video.models.wan_2.generate import _load_generation_config
+
+    path = tmp_path / "missing.yaml"
+
+    with pytest.raises(SystemExit, match="could not read config"):
+        _load_generation_config(path)
+
+
+def test_load_generation_config_rejects_non_object_yaml(tmp_path):
+    from mlx_video.models.wan_2.generate import _load_generation_config
+
+    path = tmp_path / "run.yaml"
+    path.write_text("- prompt\n- model\n")
+
+    with pytest.raises(SystemExit, match="config must be a JSON/YAML object"):
+        _load_generation_config(path)
+
+
+def test_config_resolution_applies_cli_overrides(tmp_path):
+    from mlx_video.models.wan_2.generate import (
+        _explicit_cli_dests,
+        _resolve_generation_runs,
+        build_parser,
+    )
+
+    path = tmp_path / "run.json"
+    path.write_text(
+        json.dumps(
+            {
+                "model_dir": "from-config",
+                "prompt": "config prompt",
+                "width": 832,
+                "steps": 8,
+                "output_path": "config.mp4",
+            }
+        )
+    )
+    argv = [
+        "--config",
+        str(path),
+        "--prompt",
+        "cli prompt",
+        "--width",
+        "640",
+    ]
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    runs = _resolve_generation_runs(parser, args, _explicit_cli_dests(parser, argv))
+
+    assert len(runs) == 1
+    assert runs[0].model_dir == "from-config"
+    assert runs[0].prompt == "cli prompt"
+    assert runs[0].width == 640
+    assert runs[0].steps == 8
+    assert runs[0].output_path == "config.mp4"
+
+
+def test_config_resolution_detects_equals_style_cli_overrides(tmp_path):
+    from mlx_video.models.wan_2.generate import (
+        _explicit_cli_dests,
+        _resolve_generation_runs,
+        build_parser,
+    )
+
+    path = tmp_path / "run.json"
+    path.write_text(
+        json.dumps({"model_dir": "model", "prompt": "config prompt", "width": 832})
+    )
+    argv = ["--config", str(path), "--width=640"]
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    runs = _resolve_generation_runs(parser, args, _explicit_cli_dests(parser, argv))
+
+    assert runs[0].width == 640
+
+
+def test_config_resolution_plans_multiple_runs_in_order(tmp_path):
+    from mlx_video.models.wan_2.generate import (
+        _explicit_cli_dests,
+        _resolve_generation_runs,
+        build_parser,
+    )
+
+    first = tmp_path / "first.yaml"
+    second = tmp_path / "second.json"
+    first.write_text("model_dir: model-a\nprompt: first\niterations: 2\n")
+    second.write_text(json.dumps({"model_dir": "model-b", "prompt": "second"}))
+
+    argv = ["--config", str(first), "--config", str(second), "--height", "512"]
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    runs = _resolve_generation_runs(parser, args, _explicit_cli_dests(parser, argv))
+
+    assert [run.prompt for run in runs] == ["first", "second"]
+    assert [run.model_dir for run in runs] == ["model-a", "model-b"]
+    assert [run.height for run in runs] == [512, 512]
+    assert runs[0].iterations == 2
+    assert runs[1].iterations == 1
+
+
+def test_config_resolution_rejects_missing_model_dir(tmp_path):
+    from mlx_video.models.wan_2.generate import _resolve_generation_runs, build_parser
+
+    path = tmp_path / "run.json"
+    path.write_text(json.dumps({"prompt": "prompt"}))
+    parser = build_parser()
+    args = parser.parse_args(["--config", str(path)])
+
+    with pytest.raises(SystemExit, match="--model-dir is required"):
+        _resolve_generation_runs(parser, args, set())
+
+
+def test_config_resolution_rejects_missing_prompt(tmp_path):
+    from mlx_video.models.wan_2.generate import _resolve_generation_runs, build_parser
+
+    path = tmp_path / "run.json"
+    path.write_text(json.dumps({"model_dir": "model"}))
+    parser = build_parser()
+    args = parser.parse_args(["--config", str(path)])
+
+    with pytest.raises(SystemExit, match="--prompt is required"):
+        _resolve_generation_runs(parser, args, set())
+
+
+def test_parse_lora_args_rejects_invalid_config_shape():
+    from mlx_video.models.wan_2.generate import _parse_lora_args
+
+    with pytest.raises(SystemExit, match="lora entries must be"):
+        _parse_lora_args(["not-a-pair"], "lora")
+
+
+def test_parse_lora_args_rejects_invalid_strength():
+    from mlx_video.models.wan_2.generate import _parse_lora_args
+
+    with pytest.raises(SystemExit, match="lora strength must be a number"):
+        _parse_lora_args([["path.safetensors", "strong"]], "lora")
+
+
+def test_parse_guide_scale_accepts_config_list():
+    from mlx_video.models.wan_2.generate import _parse_guide_scale
+
+    assert _parse_guide_scale([3.0, 4.0]) == (3.0, 4.0)
+
+
+def test_parse_guide_scale_rejects_empty_config_list():
+    from mlx_video.models.wan_2.generate import _parse_guide_scale
+
+    with pytest.raises(SystemExit, match="guide_scale must not be empty"):
+        _parse_guide_scale([])
 
 
 def test_wan_parser_accepts_scheduler_choices():

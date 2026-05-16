@@ -225,10 +225,60 @@ python -m mlx_video.wan2.generate \
 > - **480P** — 832×480 (landscape) or 480×832 (portrait) — for Wan2.1 1.3B
 > - **720P** — 1280×704 (landscape) or 704×1280 (portrait) — for Wan2.1 14B, Wan2.2 T2V/I2V/TI2V
 
+#### Config Files
+
+WAN generation accepts JSON, YAML, and YML run configs with keys matching the CLI option names, using underscores instead of dashes. Explicit CLI flags override config values.
+
+```yaml
+# wan-run.yaml
+model_dir: ./Wan2.2-T2V-A14B-MLX
+prompt: "Two astronauts playing chess on the surface of the moon, dramatic lighting"
+negative_prompt: "low quality, blurry, distorted"
+width: 1280
+height: 704
+num_frames: 81
+steps: 40
+guide_scale: "3.0,4.0"
+seed: 42
+output_path: wan22_t2v.mp4
+```
+
+```bash
+python -m mlx_video.wan_2.generate --config wan-run.yaml
+```
+
+JSON uses the same shape:
+
+```json
+{
+  "model_dir": "./Wan2.2-T2V-A14B-MLX",
+  "prompt": "A slow tracking shot through a neon market at night",
+  "width": 1280,
+  "height": 704,
+  "num_frames": 81,
+  "steps": 40,
+  "guide_scale": "3.0,4.0",
+  "seed": 7,
+  "output_path": "market.mp4"
+}
+```
+
+Repeat `--config` to generate multiple videos sequentially:
+
+```bash
+python -m mlx_video.wan_2.generate \
+    --config first.yaml \
+    --config second.json \
+    --config third.yml
+```
+
+Supported config keys are: `model_dir`, `prompt`, `image`, `negative_prompt`, `no_negative_prompt`, `width`, `height`, `num_frames`, `steps`, `guide_scale`, `shift`, `seed`, `output_path`, `fps`, `output_last_frame`, `scheduler`, `noise_source`, `torch_python`, `lora`, `lora_high`, `lora_low`, `tiling`, `no_compile`, `trim_first_frames`, `debug_latents`, `iterations`, `iteration_seed`, `output_prefix`, and `output_suffix`.
+
 #### Generation Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
+| `--config` | — | JSON/YAML run config; repeat for sequential batch generation |
 | `--model-dir` | (required) | Path to converted MLX model directory |
 | `--prompt` | (required) | Text prompt |
 | `--image` | — | Input image path (I2V and TI2V modes) |
