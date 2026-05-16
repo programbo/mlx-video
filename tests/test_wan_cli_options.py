@@ -58,6 +58,49 @@ def test_wan_parser_rejects_unknown_scheduler():
         )
 
 
+def test_wan_parser_accepts_tiling_modes():
+    from mlx_video.models.wan_2.generate import build_parser
+
+    parser = build_parser()
+
+    for tiling in (
+        "auto",
+        "none",
+        "default",
+        "aggressive",
+        "conservative",
+        "spatial",
+        "temporal",
+    ):
+        args = parser.parse_args(
+            [
+                "--model-dir",
+                "model",
+                "--prompt",
+                "prompt",
+                "--tiling",
+                tiling,
+            ]
+        )
+        assert args.tiling == tiling
+
+
+def test_wan_parser_rejects_unknown_tiling_mode():
+    from mlx_video.models.wan_2.generate import build_parser
+
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(
+            [
+                "--model-dir",
+                "model",
+                "--prompt",
+                "prompt",
+                "--tiling",
+                "unknown",
+            ]
+        )
+
+
 def test_wan_save_video_uses_requested_fps(tmp_path):
     pytest.importorskip("imageio")
     pytest.importorskip("imageio_ffmpeg")
