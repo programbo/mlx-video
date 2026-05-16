@@ -183,7 +183,13 @@ class ResidualBlock(nn.Module):
         ]
         self.shortcut = CausalConv3d(in_dim, out_dim, 1) if in_dim != out_dim else None
 
-    def __call__(self, x: mx.array, feat_cache=None, feat_idx=None) -> mx.array:
+    def __call__(
+        self,
+        x: mx.array,
+        feat_cache=None,
+        feat_idx=None,
+        legacy_temporal_upsample: bool = False,
+    ) -> mx.array:
         h = x if self.shortcut is None else self.shortcut(x)
 
         if feat_cache is not None:
@@ -277,7 +283,13 @@ class Resample(nn.Module):
                     dim, dim, (3, 1, 1), stride=(2, 1, 1), padding=(0, 0, 0)
                 )
 
-    def __call__(self, x: mx.array, feat_cache=None, feat_idx=None) -> mx.array:
+    def __call__(
+        self,
+        x: mx.array,
+        feat_cache=None,
+        feat_idx=None,
+        legacy_temporal_upsample: bool = False,
+    ) -> mx.array:
         """x: [B, C, T, H, W]"""
         b, c, t, h, w = x.shape
 
@@ -303,7 +315,7 @@ class Resample(nn.Module):
                         b, c, t * 2, h, w
                     )
                     t = t * 2
-            else:
+            elif legacy_temporal_upsample:
                 # Non-chunked decode still applies the learned temporal upsample.
                 x_t = self.time_conv(x)  # [B, 2C, T, H, W]
                 x_t = x_t.reshape(b, 2, c, t, h, w)
@@ -399,7 +411,15 @@ class Decoder3d(nn.Module):
             CausalConv3d(dims[-1], 3, 3, padding=1),  # [2]
         ]
 
-    def _run_up(self, layer_idx: int, x: mx.array, feat_cache, feat_idx, out_chunks):
+    def _run_up(
+        self,
+        layer_idx: int,
+        x: mx.array,
+        feat_cache,
+        feat_idx,
+        out_chunks,
+        legacy_temporal_upsample: bool = False,
+    ):
         if layer_idx >= len(self.upsamples):
             x = nn.silu(self.head[0](x))
             if feat_cache is not None:
@@ -416,6 +436,8 @@ class Decoder3d(nn.Module):
         layer = self.upsamples[layer_idx]
         if feat_cache is not None and isinstance(layer, (ResidualBlock, Resample)):
             x = layer(x, feat_cache=feat_cache, feat_idx=feat_idx)
+        elif isinstance(layer, Resample):
+            x = layer(x, legacy_temporal_upsample=legacy_temporal_upsample)
         else:
             x = layer(x)
 
@@ -427,13 +449,25 @@ class Decoder3d(nn.Module):
                     feat_cache,
                     feat_idx.copy() if feat_idx is not None else None,
                     out_chunks,
+                    legacy_temporal_upsample=legacy_temporal_upsample,
                 )
             return
 
-        self._run_up(layer_idx + 1, x, feat_cache, feat_idx, out_chunks)
+        self._run_up(
+            layer_idx + 1,
+            x,
+            feat_cache,
+            feat_idx,
+            out_chunks,
+            legacy_temporal_upsample=legacy_temporal_upsample,
+        )
 
     def __call__(
-        self, x: mx.array, feat_cache=None, feat_idx=None
+        self,
+        x: mx.array,
+        feat_cache=None,
+        feat_idx=None,
+        legacy_temporal_upsample: bool = False,
     ) -> mx.array | list[mx.array]:
         """Decode [B, z_dim, T, H, W].
 
@@ -456,7 +490,14 @@ class Decoder3d(nn.Module):
                 x = layer(x)
 
         out_chunks = []
-        self._run_up(0, x, feat_cache, feat_idx, out_chunks)
+        self._run_up(
+            0,
+            x,
+            feat_cache,
+            feat_idx,
+            out_chunks,
+            legacy_temporal_upsample=legacy_temporal_upsample,
+        )
         if feat_cache is None:
             return mx.concatenate(out_chunks, axis=2)
         return out_chunks
@@ -630,15 +671,20 @@ class WanVAE(nn.Module):
         count += 1  # encoder.head CausalConv3d
         return count
 
-    def decode(self, z: mx.array) -> mx.array:
+    def decode(self, z: mx.array, decode_mode: str = "reference") -> mx.array:
         """Decode latent to video.
 
         Args:
             z: Normalized latent [B, z_dim, T, H, W]
+            decode_mode: "reference" skips first-chunk temporal upsample to
+                match Wan2.1 reference decoding; "legacy" preserves the old
+                mlx-video single-frame temporal upsample behavior.
 
         Returns:
             Video [B, 3, T_out, H_out, W_out] clamped to [-1, 1]
         """
+        if decode_mode not in ("reference", "legacy"):
+            raise ValueError("decode_mode must be 'reference' or 'legacy'")
         mean = self.mean.reshape(1, -1, 1, 1, 1)
         inv_std = self.inv_std.reshape(1, -1, 1, 1, 1)
         z = z / inv_std + mean
@@ -650,7 +696,9 @@ class WanVAE(nn.Module):
 
         x = self.conv2(z)
         if feat_cache is None:
-            out = self.decoder(x)
+            out = self.decoder(
+                x, legacy_temporal_upsample=(decode_mode == "legacy")
+            )
             return mx.clip(out, -1, 1)
 
         out_chunks = []

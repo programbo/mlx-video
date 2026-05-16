@@ -188,10 +188,10 @@ class TestWan21TiledDecoding:
 
 
 class TestWan21TemporalScale:
-    """Verify Wan2.1 decoder temporal output is T*4 (non-causal)."""
+    """Verify Wan2.1 decoder temporal compatibility modes."""
 
-    def test_wan21_decoder_temporal_output(self):
-        """Wan2.1 Decoder3d should produce T*4 temporal output (non-causal doubling)."""
+    def test_wan21_decoder_legacy_temporal_output(self):
+        """Legacy mlx-video decode preserves the old T*4 temporal output."""
         from mlx_video.models.wan_2.vae import Decoder3d
 
         # Small decoder for fast test
@@ -206,8 +206,28 @@ class TestWan21TemporalScale:
 
         x = mx.random.normal((1, 4, 3, 4, 4))  # T=3
         mx.eval(x)
-        out = dec(x)
+        out = dec(x, legacy_temporal_upsample=True)
         mx.eval(out)
 
         # With two temporal 2× upsamples: T=3 → 6 → 12
         assert out.shape[2] == 3 * 4, f"Expected T=12, got T={out.shape[2]}"
+
+    def test_wan21_decoder_reference_single_frame_output(self):
+        """Reference decode keeps a single latent frame as a single output frame."""
+        from mlx_video.models.wan_2.vae import Decoder3d
+
+        dec = Decoder3d(
+            dim=16,
+            z_dim=4,
+            dim_mult=[1, 1, 1, 1],
+            num_res_blocks=1,
+            temporal_upsample=[True, True, False],
+        )
+        mx.eval(dec.parameters())
+
+        x = mx.random.normal((1, 4, 1, 4, 4))
+        mx.eval(x)
+        out = dec(x)
+        mx.eval(out)
+
+        assert out.shape[2] == 1

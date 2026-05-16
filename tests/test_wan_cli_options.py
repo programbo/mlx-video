@@ -781,6 +781,18 @@ def test_wan_parser_accepts_tiling_modes():
         assert args.tiling == tiling
 
 
+def test_wan_parser_accepts_legacy_vae_decode_flag():
+    from mlx_video.models.wan_2.generate import build_parser
+
+    base = ["--model-dir", "model", "--prompt", "prompt"]
+
+    default = build_parser().parse_args(base)
+    legacy = build_parser().parse_args(base + ["--legacy-vae-decode"])
+
+    assert default.legacy_vae_decode is False
+    assert legacy.legacy_vae_decode is True
+
+
 def test_wan_parser_rejects_unknown_tiling_mode():
     from mlx_video.models.wan_2.generate import build_parser
 
