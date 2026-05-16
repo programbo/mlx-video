@@ -23,6 +23,41 @@ def test_wan_parser_accepts_output_fps():
     assert args.fps == 24
 
 
+def test_wan_parser_accepts_scheduler_choices():
+    from mlx_video.models.wan_2.generate import build_parser
+
+    parser = build_parser()
+
+    for scheduler in ("euler", "dpm++", "unipc"):
+        args = parser.parse_args(
+            [
+                "--model-dir",
+                "model",
+                "--prompt",
+                "prompt",
+                "--scheduler",
+                scheduler,
+            ]
+        )
+        assert args.scheduler == scheduler
+
+
+def test_wan_parser_rejects_unknown_scheduler():
+    from mlx_video.models.wan_2.generate import build_parser
+
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(
+            [
+                "--model-dir",
+                "model",
+                "--prompt",
+                "prompt",
+                "--scheduler",
+                "unknown",
+            ]
+        )
+
+
 def test_wan_save_video_uses_requested_fps(tmp_path):
     pytest.importorskip("imageio")
     pytest.importorskip("imageio_ffmpeg")
