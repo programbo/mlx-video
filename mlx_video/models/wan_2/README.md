@@ -239,9 +239,16 @@ height: 704
 num_frames: 81
 steps: 40
 guide_scale: "3.0,4.0"
+refiner_start: 0.125
 seed: 42
 output_path: wan22_t2v.mp4
 ```
+
+For Wan2.2 dual-model runs, `refiner_start` controls when generation switches
+from the high-noise model to the low-noise model. A fraction such as `0.125`
+uses `ceil(steps * 0.125)` high-noise steps, so `steps: 8` starts the low-noise
+model at step 2. Integer values are one-based low-noise start steps; `1` means
+low-noise from the first step and `steps + 1` means all high-noise.
 
 ```bash
 python -m mlx_video.wan_2.generate --config wan-run.yaml
@@ -272,7 +279,7 @@ python -m mlx_video.wan_2.generate \
     --config third.yml
 ```
 
-Supported config keys are: `model_dir`, `prompt`, `image`, `negative_prompt`, `no_negative_prompt`, `width`, `height`, `num_frames`, `steps`, `guide_scale`, `shift`, `seed`, `output_path`, `fps`, `output_last_frame`, `scheduler`, `noise_source`, `torch_python`, `lora`, `lora_high`, `lora_low`, `tiling`, `no_compile`, `trim_first_frames`, `debug_latents`, `iterations`, `iteration_seed`, `output_prefix`, and `output_suffix`.
+Supported config keys are: `model_dir`, `prompt`, `image`, `negative_prompt`, `no_negative_prompt`, `width`, `height`, `num_frames`, `steps`, `guide_scale`, `shift`, `refiner_start`, `seed`, `output_path`, `fps`, `output_last_frame`, `scheduler`, `noise_source`, `torch_python`, `lora`, `lora_high`, `lora_low`, `tiling`, `no_compile`, `trim_first_frames`, `debug_latents`, `iterations`, `iteration_seed`, `output_prefix`, and `output_suffix`.
 
 #### Generation Options
 
@@ -289,6 +296,7 @@ Supported config keys are: `model_dir`, `prompt`, `image`, `negative_prompt`, `n
 | `--steps` | config default | Diffusion steps |
 | `--guide-scale` | config default | Guidance scale; use `"high,low"` pair for Wan2.2 dual models |
 | `--shift` | config default | Noise schedule shift |
+| `--refiner-start` | model default | Dual-model low-noise start: fraction in `(0, 1)` or one-based step `1..steps+1` |
 | `--seed` | `-1` (random) | Random seed for reproducibility |
 | `--output-path` | `output.mp4` | Output video file path |
 | `--fps` | config default | Output video frames per second |
