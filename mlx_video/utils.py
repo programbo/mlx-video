@@ -32,6 +32,15 @@ def save_last_frame_png(frames: np.ndarray, output_path: Union[str, Path]) -> Pa
     return png_path
 
 
+def format_output_value(value) -> str:
+    """Format a numeric value for compact output filenames."""
+    if value is None:
+        return "auto"
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).replace(".", "p")
+
+
 def get_model_path(model_repo: str):
     """Get or download LTX-2 model path."""
     try:

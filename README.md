@@ -82,6 +82,8 @@ Pre-converted weights are available on HuggingFace ([LTX-2-distilled](https://hu
 | `--fps` | 24 | Frames per second |
 | `--output`, `-o` | output.mp4 | Output video path |
 | `--output-last-frame` / `--no-output-last-frame` | auto | Save sibling PNG of the final frame; enabled by default for one-frame runs |
+| `--iterations` | 1 | Run multiple generations; when greater than 1, `--output-path` is treated as an output directory |
+| `--iteration-seed` | increment | Seed strategy for iterations: `same`, `increment`, or `random` |
 | `--save-frames` | false | Save individual frames as images |
 | `--model-repo` | Lightricks/LTX-2 | HuggingFace model repository |
 

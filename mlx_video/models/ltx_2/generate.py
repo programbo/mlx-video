@@ -5,6 +5,7 @@ Supports both distilled (two-stage with upsampling) and dev (single-stage with C
 
 import argparse
 import math
+import random
 import time
 from enum import Enum
 from pathlib import Path
@@ -40,6 +41,7 @@ from mlx_video.models.ltx_2.video_vae import VideoEncoder
 from mlx_video.models.ltx_2.video_vae.decoder import VideoDecoder
 from mlx_video.models.ltx_2.video_vae.tiling import TilingConfig
 from mlx_video.utils import (
+    format_output_value,
     get_model_path,
     load_image,
     prepare_image_for_encoding,
@@ -57,6 +59,39 @@ class PipelineType(Enum):
         "dev-two-stage"  # Two-stage: dev (half res, CFG) + distilled LoRA (full res)
     )
     DEV_TWO_STAGE_HQ = "dev-two-stage-hq"  # Two-stage: res_2s sampler, LoRA both stages
+
+
+def _iteration_seed(base_seed: int, iteration: int, strategy: str) -> int:
+    """Resolve the concrete seed for an iteration."""
+    if strategy == "same":
+        return base_seed
+    if strategy == "increment":
+        if base_seed < 0:
+            base_seed = random.randint(0, 2**32 - 1)
+        return base_seed + iteration
+    if strategy == "random":
+        return random.randint(0, 2**32 - 1)
+    raise ValueError(f"Unsupported iteration seed strategy: {strategy}")
+
+
+def _iteration_output_path(
+    output_dir: str | Path,
+    *,
+    prefix: str,
+    suffix: str,
+    seed: int,
+    steps: int | None,
+    width: int,
+    height: int,
+) -> Path:
+    """Build a deterministic LTX iteration output path."""
+    suffix_part = f"-{suffix}" if suffix else ""
+    filename = (
+        f"{prefix}ltx-seed{seed}"
+        f"-s{format_output_value(steps)}"
+        f"-{width}x{height}{suffix_part}.mp4"
+    )
+    return Path(output_dir) / filename
 
 
 # Distilled model sigma schedules
@@ -3385,6 +3420,23 @@ Examples:
         help="Spatial upscaler filename (e.g. ltx-2.3-spatial-upscaler-x1.5-1.0.safetensors). "
         "Auto-detects x2 by default. Use this to select x1.5 or a specific version.",
     )
+    parser.add_argument("--iterations", type=int, default=1)
+    parser.add_argument(
+        "--iteration-seed",
+        choices=["same", "increment", "random"],
+        default="increment",
+        help="Seed strategy for subsequent iterations",
+    )
+    parser.add_argument(
+        "--output-prefix",
+        default="",
+        help="String prepended to generated iteration filenames",
+    )
+    parser.add_argument(
+        "--output-suffix",
+        default="",
+        help="String appended to generated iteration filenames before .mp4",
+    )
     args = parser.parse_args()
 
     pipeline_map = {
@@ -3395,51 +3447,88 @@ Examples:
     }
     pipeline = pipeline_map[args.pipeline]
 
-    generate_video(
-        model_repo=args.model_repo,
-        text_encoder_repo=args.text_encoder_repo,
-        prompt=args.prompt,
-        pipeline=pipeline,
-        negative_prompt=args.negative_prompt,
-        height=args.height,
-        width=args.width,
-        num_frames=args.num_frames,
-        num_inference_steps=args.steps,
-        cfg_scale=args.cfg_scale,
-        audio_cfg_scale=args.audio_cfg_scale,
-        cfg_rescale=args.cfg_rescale,
-        seed=args.seed,
-        fps=args.fps,
-        output_path=args.output_path,
-        save_frames=args.save_frames,
-        verbose=args.verbose,
-        enhance_prompt=args.enhance_prompt,
-        max_tokens=args.max_tokens,
-        temperature=args.temperature,
-        image=args.image,
-        image_strength=args.image_strength,
-        image_frame_idx=args.image_frame_idx,
-        end_image=args.end_image,
-        end_image_strength=args.end_image_strength,
-        tiling=args.tiling,
-        stream=args.stream,
-        audio=args.audio,
-        output_audio_path=args.output_audio,
-        use_apg=args.apg,
-        apg_eta=args.apg_eta,
-        apg_norm_threshold=args.apg_norm_threshold,
-        stg_scale=args.stg_scale,
-        stg_blocks=args.stg_blocks,
-        modality_scale=args.modality_scale,
-        lora_path=args.lora_path,
-        lora_strength=args.lora_strength,
-        lora_strength_stage_1=args.lora_strength_stage_1,
-        lora_strength_stage_2=args.lora_strength_stage_2,
-        audio_file=args.audio_file,
-        audio_start_time=args.audio_start_time,
-        spatial_upscaler=args.spatial_upscaler,
-        output_last_frame=args.output_last_frame,
-    )
+    if args.iterations < 1:
+        raise SystemExit("--iterations must be at least 1")
+
+    output_dir = Path(args.output_path)
+    if args.iterations > 1:
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+    random_base_seed = args.seed
+    if args.iteration_seed == "increment" and random_base_seed < 0:
+        random_base_seed = random.randint(0, 2**32 - 1)
+
+    wall_times = []
+    for iteration in range(args.iterations):
+        seed = _iteration_seed(random_base_seed, iteration, args.iteration_seed)
+        output_path = (
+            args.output_path
+            if args.iterations == 1
+            else str(
+                _iteration_output_path(
+                    output_dir,
+                    prefix=args.output_prefix,
+                    suffix=args.output_suffix,
+                    seed=seed,
+                    steps=args.steps,
+                    width=args.width,
+                    height=args.height,
+                )
+            )
+        )
+        console.print(f"[{iteration + 1}/{args.iterations}] seed={seed} output={output_path}")
+        started = time.time()
+        generate_video(
+            model_repo=args.model_repo,
+            text_encoder_repo=args.text_encoder_repo,
+            prompt=args.prompt,
+            pipeline=pipeline,
+            negative_prompt=args.negative_prompt,
+            height=args.height,
+            width=args.width,
+            num_frames=args.num_frames,
+            num_inference_steps=args.steps,
+            cfg_scale=args.cfg_scale,
+            audio_cfg_scale=args.audio_cfg_scale,
+            cfg_rescale=args.cfg_rescale,
+            seed=seed,
+            fps=args.fps,
+            output_path=output_path,
+            save_frames=args.save_frames,
+            verbose=args.verbose,
+            enhance_prompt=args.enhance_prompt,
+            max_tokens=args.max_tokens,
+            temperature=args.temperature,
+            image=args.image,
+            image_strength=args.image_strength,
+            image_frame_idx=args.image_frame_idx,
+            end_image=args.end_image,
+            end_image_strength=args.end_image_strength,
+            tiling=args.tiling,
+            stream=args.stream,
+            audio=args.audio,
+            output_audio_path=args.output_audio,
+            use_apg=args.apg,
+            apg_eta=args.apg_eta,
+            apg_norm_threshold=args.apg_norm_threshold,
+            stg_scale=args.stg_scale,
+            stg_blocks=args.stg_blocks,
+            modality_scale=args.modality_scale,
+            lora_path=args.lora_path,
+            lora_strength=args.lora_strength,
+            lora_strength_stage_1=args.lora_strength_stage_1,
+            lora_strength_stage_2=args.lora_strength_stage_2,
+            audio_file=args.audio_file,
+            audio_start_time=args.audio_start_time,
+            spatial_upscaler=args.spatial_upscaler,
+            output_last_frame=args.output_last_frame,
+        )
+        elapsed = time.time() - started
+        wall_times.append(elapsed)
+        console.print(f"[{iteration + 1}/{args.iterations}] wall_time={elapsed:.3f}s")
+
+    if args.iterations > 1:
+        console.print(f"Average wall time: {sum(wall_times) / len(wall_times):.3f}s")
 
 
 if __name__ == "__main__":
