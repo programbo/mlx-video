@@ -77,6 +77,7 @@ def generate_video(
     shift: float = None,
     seed: int = -1,
     output_path: str = "output.mp4",
+    fps: int | None = None,
     scheduler: str = "unipc",
     loras: list | None = None,
     loras_high: list | None = None,
@@ -101,6 +102,7 @@ def generate_video(
         shift: Noise schedule shift (None = use config default)
         seed: Random seed (-1 for random)
         output_path: Output video path
+        fps: Output frames per second (None = use config default)
         scheduler: Solver type: 'euler', 'dpm++', or 'unipc' (default)
         loras: Optional list of (path, strength) tuples applied to all models
         loras_high: Optional list of (path, strength) tuples for high-noise model only
@@ -218,6 +220,7 @@ def generate_video(
         shift = config.sample_shift
     if guide_scale is None:
         guide_scale = config.sample_guide_scale
+    output_fps = fps if fps is not None else config.sample_fps
 
     # Normalize guide_scale
     if isinstance(guide_scale, (int, float)):
@@ -266,7 +269,7 @@ def generate_video(
             else neg_prompt_resolved
         )
         print(f"  Neg prompt: {neg_display}")
-    print(f"  Size: {width}x{height}, Frames: {num_frames}")
+    print(f"  Size: {width}x{height}, Frames: {num_frames}, FPS: {output_fps}")
     print(
         f"  Steps: {steps}, Guide: {guide_scale}, Shift: {shift}, Solver: {scheduler}"
     )
@@ -803,12 +806,12 @@ def generate_video(
             f"{Colors.DIM}  Trimmed first {trim_pixels} frames ({video.shape[0]} remaining){Colors.RESET}"
         )
 
-    save_video(video, output_path, fps=config.sample_fps)
+    save_video(video, output_path, fps=output_fps)
     print(f"\n{Colors.GREEN}✓ Video saved to {output_path}{Colors.RESET}")
     print(f"{Colors.DIM}  Total time: {time.time() - t1:.1f}s{Colors.RESET}")
 
 
-def main():
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Wan Text-to-Video Generation (MLX)")
     parser.add_argument(
         "--model-dir",
@@ -868,6 +871,7 @@ def main():
     parser.add_argument(
         "--output-path", type=str, default="output.mp4", help="Output video path"
     )
+    parser.add_argument("--fps", type=int, default=None, help="Output frames per second")
     parser.add_argument(
         "--scheduler",
         type=str,
@@ -930,6 +934,11 @@ def main():
         action="store_true",
         help="Print per-temporal-position latent statistics after denoising (diagnostic)",
     )
+    return parser
+
+
+def main():
+    parser = build_parser()
     args = parser.parse_args()
 
     # Parse guide scale
@@ -962,6 +971,7 @@ def main():
         shift=args.shift,
         seed=args.seed,
         output_path=args.output_path,
+        fps=args.fps,
         scheduler=args.scheduler,
         loras=_parse_lora_args(args.lora),
         loras_high=_parse_lora_args(args.lora_high),

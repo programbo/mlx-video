@@ -241,6 +241,7 @@ python -m mlx_video.wan2.generate \
 | `--shift` | config default | Noise schedule shift |
 | `--seed` | `-1` (random) | Random seed for reproducibility |
 | `--output-path` | `output.mp4` | Output video file path |
+| `--fps` | config default | Output video frames per second |
 | `--scheduler` | `unipc` | Solver: `euler`, `dpm++`, or `unipc` |
 | `--trim-first-frames` | `0` | Drop N leading frames (fixes first-frame artifacts on 14B models) |
 | `--tiling` | `auto` | VAE tiling: `auto`, `none`, `spatial`, `temporal` |
