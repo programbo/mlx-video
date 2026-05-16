@@ -228,6 +228,36 @@ def test_config_resolution_accepts_sigma_and_euler_options(tmp_path):
     assert runs[0].euler_output == "denoised"
 
 
+def test_config_resolution_accepts_reference_bridge_options(tmp_path):
+    from mlx_video.models.wan_2.generate import _resolve_generation_runs, build_parser
+
+    path = tmp_path / "run.json"
+    path.write_text(
+        json.dumps(
+            {
+                "model_dir": "model",
+                "prompt": "prompt",
+                "t2v_lightning_preset": True,
+                "positive_conditioning_npz": "positive.npz",
+                "negative_conditioning_npz": "negative.npz",
+                "dump_text_conditioning_npz": "text.npz",
+                "dump_final_latents_npz": "final.npz",
+                "initial_latents_npz": "initial.npz",
+            }
+        )
+    )
+    parser = build_parser()
+    args = parser.parse_args(["--config", str(path)])
+    runs = _resolve_generation_runs(parser, args, set())
+
+    assert runs[0].t2v_lightning_preset is True
+    assert runs[0].positive_conditioning_npz == "positive.npz"
+    assert runs[0].negative_conditioning_npz == "negative.npz"
+    assert runs[0].dump_text_conditioning_npz == "text.npz"
+    assert runs[0].dump_final_latents_npz == "final.npz"
+    assert runs[0].initial_latents_npz == "initial.npz"
+
+
 def test_config_resolution_detects_equals_style_cli_overrides(tmp_path):
     from mlx_video.models.wan_2.generate import (
         _explicit_cli_dests,
@@ -339,7 +369,7 @@ def test_wan_parser_accepts_refiner_start():
     assert args.refiner_start == 0.125
 
 
-def test_resolve_refiner_start_accepts_x2v_fraction():
+def test_resolve_refiner_start_accepts_fractional_boundary():
     from mlx_video.models.wan_2.generate import _resolve_refiner_start
 
     assert _resolve_refiner_start(0.125, 8) == (2, 1)
@@ -487,6 +517,76 @@ def test_wan_parser_accepts_noise_source_options():
     assert args.torch_python == "/usr/bin/python3"
 
 
+def test_t2v_lightning_preset_sets_t2v_sampling_defaults():
+    from mlx_video.models.wan_2.generate import (
+        REFERENCE_NEGATIVE_PROMPT,
+        WAN22_T2V_LIGHTNING_HIGH_PATH,
+        WAN22_T2V_LIGHTNING_LOW_PATH,
+        _resolve_generation_runs,
+        build_parser,
+    )
+
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "--model-dir",
+            "model",
+            "--prompt",
+            "prompt",
+            "--t2v-lightning-preset",
+        ]
+    )
+    runs = _resolve_generation_runs(
+        parser, args, {"model_dir", "prompt", "t2v_lightning_preset"}
+    )
+
+    assert runs[0].steps == 8
+    assert runs[0].guide_scale == 1
+    assert runs[0].shift == 5
+    assert runs[0].scheduler == "euler"
+    assert runs[0].sigma_schedule == "comfy-simple"
+    assert runs[0].euler_output == "velocity"
+    assert runs[0].fps == 24
+    assert runs[0].refiner_start == 0.125
+    assert runs[0].noise_source == "torch"
+    assert runs[0].negative_prompt == REFERENCE_NEGATIVE_PROMPT
+    assert runs[0].lora_high == [(WAN22_T2V_LIGHTNING_HIGH_PATH, 1.0)]
+    assert runs[0].lora_low == [(WAN22_T2V_LIGHTNING_LOW_PATH, 1.0)]
+
+
+def test_t2v_lightning_preset_preserves_explicit_overrides():
+    from mlx_video.models.wan_2.generate import (
+        _explicit_cli_dests,
+        _resolve_generation_runs,
+        build_parser,
+    )
+
+    argv = [
+        "--model-dir",
+        "model",
+        "--prompt",
+        "prompt",
+        "--t2v-lightning-preset",
+        "--scheduler",
+        "unipc",
+        "--noise-source",
+        "mlx",
+        "--negative-prompt",
+        "custom negative",
+        "--lora-high",
+        "custom-high.safetensors",
+        "0.5",
+    ]
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    runs = _resolve_generation_runs(parser, args, _explicit_cli_dests(parser, argv))
+
+    assert runs[0].scheduler == "unipc"
+    assert runs[0].noise_source == "mlx"
+    assert runs[0].negative_prompt == "custom negative"
+    assert runs[0].lora_high == [["custom-high.safetensors", "0.5"]]
+
+
 def test_wan_parser_rejects_unknown_noise_source():
     from mlx_video.models.wan_2.generate import build_parser
 
@@ -515,6 +615,82 @@ def test_torch_randn_is_seed_deterministic():
     np.testing.assert_allclose(first, second)
     assert first.shape == (2, 3)
     assert not np.allclose(first, different)
+
+
+def test_torch_randn_matches_one_batch_torch_seed_semantics():
+    torch = pytest.importorskip("torch")
+
+    from mlx_video.models.wan_2.generate import _torch_randn
+
+    shape = (2, 3, 4)
+    generator = torch.manual_seed(123)
+    expected = torch.randn(
+        (1, *shape), dtype=torch.float32, device="cpu", generator=generator
+    ).numpy()[0]
+
+    np.testing.assert_allclose(np.array(_torch_randn(shape, 123)), expected)
+
+
+def test_npz_bridge_loaders_accept_supported_keys_and_strip_batch(tmp_path):
+    from mlx_video.models.wan_2.generate import (
+        _load_latents_npz,
+        _load_text_conditioning_npz,
+    )
+
+    conditioning_path = tmp_path / "conditioning.npz"
+    latents_path = tmp_path / "latents.npz"
+    np.savez(conditioning_path, conditioning=np.ones((1, 512, 4096), dtype=np.float32))
+    np.savez(latents_path, samples=np.ones((1, 48, 1, 40, 22), dtype=np.float32))
+
+    assert tuple(_load_text_conditioning_npz(conditioning_path).shape) == (512, 4096)
+    assert tuple(_load_latents_npz(latents_path).shape) == (48, 1, 40, 22)
+
+
+def test_npz_bridge_loaders_reject_bad_shapes(tmp_path):
+    from mlx_video.models.wan_2.generate import (
+        _load_latents_npz,
+        _load_text_conditioning_npz,
+    )
+
+    conditioning_path = tmp_path / "conditioning.npz"
+    latents_path = tmp_path / "latents.npz"
+    np.savez(conditioning_path, positive=np.ones((2, 512, 4096), dtype=np.float32))
+    np.savez(latents_path, latents=np.ones((48, 40, 22), dtype=np.float32))
+
+    with pytest.raises(ValueError, match="must have shape"):
+        _load_text_conditioning_npz(conditioning_path)
+    with pytest.raises(ValueError, match="must have shape"):
+        _load_latents_npz(latents_path)
+
+
+def test_npz_bridge_dumpers_write_stable_keys(tmp_path):
+    import mlx.core as mx
+
+    from mlx_video.models.wan_2.generate import (
+        _dump_latents_npz,
+        _dump_text_conditioning_npz,
+    )
+
+    class Config:
+        vae_z_dim = 16
+
+    text_path = tmp_path / "text.npz"
+    latents_path = tmp_path / "final.npz"
+    _dump_text_conditioning_npz(
+        text_path,
+        mx.array(np.ones((2, 3), dtype=np.float32)),
+        mx.array(np.zeros((2, 3), dtype=np.float32)),
+    )
+    _dump_latents_npz(
+        latents_path,
+        mx.array(np.ones((16, 1, 2, 3), dtype=np.float32)),
+        Config(),
+    )
+
+    text = np.load(text_path)
+    latents = np.load(latents_path)
+    assert sorted(text.files) == ["negative", "positive"]
+    assert sorted(latents.files) == ["latents_model", "latents_vae_bcthw"]
 
 
 def test_wan_parser_accepts_tiling_modes():

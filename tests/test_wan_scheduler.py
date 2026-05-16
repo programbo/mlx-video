@@ -218,7 +218,7 @@ class TestComputeSigmas:
         official = np.append(official, 0.0).astype(np.float32)
         np.testing.assert_allclose(sigmas, official, atol=1e-6)
 
-    def test_comfy_simple_sigmas_match_x2v_parity_values(self):
+    def test_comfy_simple_sigmas_match_reference_values(self):
         from mlx_video.models.wan_2.scheduler import compute_sigma_schedule
 
         sigmas = compute_sigma_schedule(8, shift=5.0, sigma_schedule="comfy-simple")

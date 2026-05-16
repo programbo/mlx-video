@@ -47,6 +47,21 @@ class Colors:
 # Backward-compat alias (tests and external code may use the old name)
 _build_i2v_mask = build_i2v_mask
 
+REFERENCE_NEGATIVE_PROMPT = (
+    "overly vivid colors, overexposure, static, blurry details, subtitles, "
+    "watermark, artwork, painting, still image, overall grey, worst quality, "
+    "low quality, JPEG compression artifacts, ugly, deformed, extra fingers, "
+    "poorly drawn hands, poorly drawn faces, distorted, disfigured, malformed "
+    "limbs, fused fingers, motionless, cluttered background, three legs, "
+    "crowded background, walking backwards"
+)
+WAN22_T2V_LIGHTNING_HIGH_PATH = (
+    "/Volumes/Jove/Models/loras/WAN2.2/T2V/Lightning 4Steps A14B FP16 HIGH.safetensors"
+)
+WAN22_T2V_LIGHTNING_LOW_PATH = (
+    "/Volumes/Jove/Models/loras/WAN2.2/T2V/Lightning 4Steps A14B FP16 LOW.safetensors"
+)
+
 CONFIG_KEYS = {
     "model_dir",
     "prompt",
@@ -69,6 +84,12 @@ CONFIG_KEYS = {
     "euler_output",
     "noise_source",
     "torch_python",
+    "t2v_lightning_preset",
+    "positive_conditioning_npz",
+    "negative_conditioning_npz",
+    "dump_text_conditioning_npz",
+    "dump_final_latents_npz",
+    "initial_latents_npz",
     "lora",
     "lora_high",
     "lora_low",
@@ -220,6 +241,35 @@ def _parse_lora_args(lora_list, name: str):
     return parsed
 
 
+def apply_t2v_lightning_defaults(
+    values: dict, user_keys: set[str] | None = None
+) -> None:
+    """Apply Wan2.2 T2V Lightning reference defaults without overriding user values."""
+    if not values.get("t2v_lightning_preset"):
+        return
+    if values.get("image"):
+        raise SystemExit("--t2v-lightning-preset is only supported for T2V runs")
+
+    user_keys = user_keys or set()
+    defaults = {
+        "steps": 8,
+        "guide_scale": 1,
+        "shift": 5,
+        "scheduler": "euler",
+        "sigma_schedule": "comfy-simple",
+        "euler_output": "velocity",
+        "fps": 24,
+        "refiner_start": 0.125,
+        "noise_source": "torch",
+        "negative_prompt": REFERENCE_NEGATIVE_PROMPT,
+        "lora_high": [(WAN22_T2V_LIGHTNING_HIGH_PATH, 1.0)],
+        "lora_low": [(WAN22_T2V_LIGHTNING_LOW_PATH, 1.0)],
+    }
+    for key, default in defaults.items():
+        if key not in user_keys:
+            values[key] = default
+
+
 def _resolve_refiner_start(refiner_start: float | int, steps: int) -> tuple[int, int]:
     """Resolve refiner_start to one-based LNE start step and HNE step count."""
     value = float(refiner_start)
@@ -242,12 +292,17 @@ def _resolve_run_args(
     explicit_dests: set[str],
 ) -> argparse.Namespace:
     values = _parser_defaults(parser)
+    user_keys = set()
     if config:
         values.update(config)
+        user_keys.update(config.keys())
 
     cli_values = vars(args)
     for dest in explicit_dests:
         values[dest] = cli_values[dest]
+    user_keys.update(explicit_dests)
+
+    apply_t2v_lightning_defaults(values, user_keys)
 
     return argparse.Namespace(**values)
 
@@ -347,6 +402,12 @@ def _run_generation_args(args: argparse.Namespace) -> None:
             euler_output=args.euler_output,
             noise_source=args.noise_source,
             torch_python=args.torch_python,
+            t2v_lightning_preset=args.t2v_lightning_preset,
+            positive_conditioning_npz=args.positive_conditioning_npz,
+            negative_conditioning_npz=args.negative_conditioning_npz,
+            dump_text_conditioning_npz=args.dump_text_conditioning_npz,
+            dump_final_latents_npz=args.dump_final_latents_npz,
+            initial_latents_npz=args.initial_latents_npz,
             loras=loras,
             loras_high=loras_high,
             loras_low=loras_low,
@@ -365,7 +426,7 @@ def _run_generation_args(args: argparse.Namespace) -> None:
 
 
 def _torch_randn(shape: tuple[int, ...], seed: int, torch_python: str | None = None) -> mx.array:
-    """Generate CPU Torch-compatible random normal noise."""
+    """Generate Comfy-compatible CPU Torch random normal noise."""
     if torch_python is None:
         try:
             import torch
@@ -374,21 +435,105 @@ def _torch_randn(shape: tuple[int, ...], seed: int, torch_python: str | None = N
                 "--noise-source torch requires torch in the active Python or --torch-python"
             ) from exc
 
-        generator = torch.Generator(device="cpu").manual_seed(seed)
-        return mx.array(torch.randn(shape, generator=generator).numpy())
+        generator = torch.manual_seed(seed)
+        arr = torch.randn(
+            (1, *shape), dtype=torch.float32, device="cpu", generator=generator
+        ).numpy()[0]
+        return mx.array(arr.astype(np.float32, copy=False))
 
-    with tempfile.NamedTemporaryFile(suffix=".npy") as fh:
+    with tempfile.NamedTemporaryFile(suffix=".npy", delete=False) as fh:
+        tmp_path = Path(fh.name)
+    try:
         script = (
             "import numpy as np, torch, sys; "
             "shape=tuple(int(x) for x in sys.argv[2].split(',')); "
-            "g=torch.Generator(device='cpu').manual_seed(int(sys.argv[3])); "
-            "np.save(sys.argv[1], torch.randn(shape, generator=g).numpy())"
+            "g=torch.manual_seed(int(sys.argv[3])); "
+            "arr=torch.randn((1,*shape), dtype=torch.float32, device='cpu', generator=g).numpy()[0]; "
+            "np.save(sys.argv[1], arr)"
         )
         subprocess.run(
-            [torch_python, "-c", script, fh.name, ",".join(map(str, shape)), str(seed)],
+            [
+                torch_python,
+                "-c",
+                script,
+                str(tmp_path),
+                ",".join(map(str, shape)),
+                str(seed),
+            ],
             check=True,
         )
-        return mx.array(np.load(fh.name))
+        return mx.array(np.load(tmp_path).astype(np.float32, copy=False))
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+def _load_text_conditioning_npz(path: str | Path) -> mx.array:
+    """Load raw text conditioning with shape [tokens, dim]."""
+    data = np.load(path)
+    key = next((k for k in ("conditioning", "positive", "context") if k in data), None)
+    if key is None:
+        raise ValueError(
+            f"{path} must contain one of: conditioning, positive, or context"
+        )
+    arr = data[key]
+    if arr.ndim == 3 and arr.shape[0] == 1:
+        arr = arr[0]
+    if arr.ndim != 2:
+        raise ValueError(
+            f"{path}:{key} must have shape [tokens, dim] or [1, tokens, dim], got {arr.shape}"
+        )
+    return mx.array(arr.astype(np.float32, copy=False))
+
+
+def _load_latents_npz(path: str | Path) -> mx.array:
+    """Load model-space latents/noise with shape [C, T, H, W]."""
+    data = np.load(path)
+    key = next(
+        (k for k in ("latents_model", "latents", "samples", "noise") if k in data),
+        None,
+    )
+    if key is None:
+        raise ValueError(
+            f"{path} must contain latents_model, latents, samples, or noise"
+        )
+    arr = data[key]
+    if arr.ndim == 5 and arr.shape[0] == 1:
+        arr = arr[0]
+    if arr.ndim != 4:
+        raise ValueError(
+            f"{path}:{key} must have shape [C,T,H,W] or [1,C,T,H,W], got {arr.shape}"
+        )
+    return mx.array(arr.astype(np.float32, copy=False))
+
+
+def _dump_text_conditioning_npz(
+    path: str | Path,
+    context: mx.array,
+    context_null: mx.array | None,
+) -> None:
+    """Persist raw T5 embeddings before Wan model text projection."""
+    payload = {"positive": np.array(context)}
+    if context_null is not None:
+        payload["negative"] = np.array(context_null)
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(path, **payload)
+
+
+def _dump_latents_npz(path: str | Path, latents: mx.array, config) -> None:
+    """Persist final latents in model space and VAE input layout."""
+    payload = {"latents_model": np.array(latents)}
+    if config.vae_z_dim == 48:
+        from mlx_video.models.wan_2.vae22 import denormalize_latents
+
+        z = latents.transpose(1, 2, 3, 0)[None]
+        payload["latents_vae_thwc"] = np.array(denormalize_latents(z))
+        payload["latents_vae_bcthw"] = payload["latents_vae_thwc"].transpose(
+            0, 4, 1, 2, 3
+        )
+    else:
+        payload["latents_vae_bcthw"] = np.array(latents[None])
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(path, **payload)
 
 
 def _best_output_size(w, h, dw, dh, max_area):
@@ -435,6 +580,12 @@ def generate_video(
     euler_output: str = "velocity",
     noise_source: str = "mlx",
     torch_python: str | None = None,
+    t2v_lightning_preset: bool = False,
+    positive_conditioning_npz: str | None = None,
+    negative_conditioning_npz: str | None = None,
+    dump_text_conditioning_npz: str | None = None,
+    dump_final_latents_npz: str | None = None,
+    initial_latents_npz: str | None = None,
     loras: list | None = None,
     loras_high: list | None = None,
     loras_low: list | None = None,
@@ -468,6 +619,13 @@ def generate_video(
         euler_output: Euler model-output interpretation: 'velocity' or 'denoised'
         noise_source: Initial latent noise source: 'mlx' (default) or 'torch'
         torch_python: Optional Python executable used to generate Torch RNG noise
+        t2v_lightning_preset: Apply Wan2.2 T2V Lightning reference defaults.
+        positive_conditioning_npz: Optional raw positive text-conditioning NPZ
+            to bypass MLX T5 encoding.
+        negative_conditioning_npz: Optional raw negative text-conditioning NPZ.
+        dump_text_conditioning_npz: Optional path to save raw MLX T5 conditioning.
+        dump_final_latents_npz: Optional path to save final denoised latents.
+        initial_latents_npz: Optional initial noise/latent tensor NPZ.
         loras: Optional list of (path, strength) tuples applied to all models
         loras_high: Optional list of (path, strength) tuples for high-noise model only
         loras_low: Optional list of (path, strength) tuples for low-noise model only
@@ -540,6 +698,45 @@ def generate_video(
 
     is_dual = config.dual_model
     is_i2v = image is not None
+    if t2v_lightning_preset:
+        if is_i2v:
+            raise ValueError("--t2v-lightning-preset is only supported for T2V runs")
+        parity_values = {
+            "steps": steps,
+            "guide_scale": guide_scale,
+            "shift": shift,
+            "scheduler": scheduler,
+            "sigma_schedule": sigma_schedule,
+            "euler_output": euler_output,
+            "fps": fps,
+            "refiner_start": refiner_start,
+            "noise_source": noise_source,
+            "negative_prompt": negative_prompt,
+            "lora_high": loras_high,
+            "lora_low": loras_low,
+        }
+        user_keys = {
+            key for key, value in parity_values.items() if value is not None
+        }
+        if noise_source == "mlx":
+            user_keys.discard("noise_source")
+        if scheduler == "unipc":
+            user_keys.discard("scheduler")
+        if sigma_schedule == "official":
+            user_keys.discard("sigma_schedule")
+        apply_t2v_lightning_defaults(parity_values, user_keys)
+        steps = parity_values["steps"]
+        guide_scale = parity_values["guide_scale"]
+        shift = parity_values["shift"]
+        scheduler = parity_values["scheduler"]
+        sigma_schedule = parity_values["sigma_schedule"]
+        euler_output = parity_values["euler_output"]
+        fps = parity_values["fps"]
+        refiner_start = parity_values["refiner_start"]
+        noise_source = parity_values["noise_source"]
+        negative_prompt = parity_values["negative_prompt"]
+        loras_high = parity_values["lora_high"]
+        loras_low = parity_values["lora_low"]
 
     # Validate config against actual weights (handles mismatched config.json)
     if not is_dual:
@@ -648,6 +845,7 @@ def generate_video(
     print(
         f"{Colors.DIM}  Sigma schedule: {sigma_schedule}, Euler output: {euler_output}{Colors.RESET}"
     )
+    print(f"{Colors.DIM}  Noise source: {noise_source}{Colors.RESET}")
     if resolved_refiner_start is not None:
         low_noise_steps = steps - high_noise_steps
         print(
@@ -655,6 +853,8 @@ def generate_video(
             f"(HNE {high_noise_steps} step{'s' if high_noise_steps != 1 else ''}, "
             f"LNE {low_noise_steps} step{'s' if low_noise_steps != 1 else ''})"
         )
+    if t2v_lightning_preset:
+        print(f"  T2V Lightning preset: enabled")
     if cfg_disabled:
         print(f"  CFG: disabled (guide_scale≤1 → B=1 fast path, 2x denoising speedup)")
     print(f"{Colors.RESET}")
@@ -709,34 +909,64 @@ def generate_video(
     print(f"{Colors.DIM}  Latent shape: {target_shape}")
     print(f"  Sequence length: {seq_len}{Colors.RESET}")
 
-    # Load T5 encoder
+    # Load or compute raw text conditioning.
     t1 = time.time()
-    print(f"\n{Colors.BLUE}Loading T5 encoder...{Colors.RESET}")
-    t5_path = model_dir / "t5_encoder.safetensors"
-    t5_encoder = load_t5_encoder(t5_path, config)
-
-    # Load tokenizer
-    from transformers import AutoTokenizer
-
-    tokenizer = AutoTokenizer.from_pretrained("google/umt5-xxl")
-
-    # Encode prompts
-    print(f"{Colors.BLUE}Encoding text...{Colors.RESET}")
-    context = encode_text(t5_encoder, tokenizer, prompt, config.text_len)
-    if cfg_disabled:
-        context_null = None
-        mx.eval(context)
-    else:
-        context_null = encode_text(
-            t5_encoder, tokenizer, neg_prompt_resolved, config.text_len
+    if positive_conditioning_npz:
+        print(f"\n{Colors.BLUE}Loading text conditioning...{Colors.RESET}")
+        context = _load_text_conditioning_npz(positive_conditioning_npz)
+        if cfg_disabled:
+            context_null = None
+            mx.eval(context)
+        elif negative_conditioning_npz:
+            context_null = _load_text_conditioning_npz(negative_conditioning_npz)
+            mx.eval(context, context_null)
+        else:
+            raise ValueError(
+                "--negative-conditioning-npz is required when CFG is enabled"
+            )
+        print(
+            f"{Colors.DIM}  Positive conditioning: {positive_conditioning_npz} shape={context.shape}"
         )
-        mx.eval(context, context_null)
+        if context_null is not None:
+            print(
+                f"  Negative conditioning: {negative_conditioning_npz} shape={context_null.shape}"
+            )
+        print(f"  Text conditioning load: {time.time() - t1:.1f}s{Colors.RESET}")
+    else:
+        print(f"\n{Colors.BLUE}Loading T5 encoder...{Colors.RESET}")
+        t5_path = model_dir / "t5_encoder.safetensors"
+        t5_encoder = load_t5_encoder(t5_path, config)
 
-    # Free T5 from memory
-    del t5_encoder
-    gc.collect()
-    mx.clear_cache()
-    print(f"{Colors.DIM}  T5 encoding: {time.time() - t1:.1f}s{Colors.RESET}")
+        # Load tokenizer
+        from transformers import AutoTokenizer
+
+        tokenizer = AutoTokenizer.from_pretrained("google/umt5-xxl")
+
+        # Encode prompts
+        print(f"{Colors.BLUE}Encoding text...{Colors.RESET}")
+        context = encode_text(t5_encoder, tokenizer, prompt, config.text_len)
+        if cfg_disabled:
+            context_null = None
+            mx.eval(context)
+        else:
+            context_null = encode_text(
+                t5_encoder, tokenizer, neg_prompt_resolved, config.text_len
+            )
+            mx.eval(context, context_null)
+
+        if dump_text_conditioning_npz:
+            _dump_text_conditioning_npz(
+                dump_text_conditioning_npz, context, context_null
+            )
+            print(
+                f"{Colors.DIM}  Text conditioning dumped to {dump_text_conditioning_npz}{Colors.RESET}"
+            )
+
+        # Free T5 from memory
+        del t5_encoder
+        gc.collect()
+        mx.clear_cache()
+        print(f"{Colors.DIM}  T5 encoding: {time.time() - t1:.1f}s{Colors.RESET}")
 
     # I2V: encode image to latent space
     z_img = None
@@ -931,8 +1161,17 @@ def generate_video(
         sched = sched_cls(num_train_timesteps=config.num_train_timesteps)
     sched.set_timesteps(steps, shift=shift, sigma_schedule=sigma_schedule)
 
-    # Generate initial noise
-    if noise_source == "mlx":
+    # Generate or load initial noise
+    if initial_latents_npz:
+        noise = _load_latents_npz(initial_latents_npz)
+        if tuple(noise.shape) != tuple(target_shape):
+            raise ValueError(
+                f"--initial-latents-npz shape {noise.shape} does not match target {target_shape}"
+            )
+        print(
+            f"{Colors.DIM}  Initial latents loaded from {initial_latents_npz}{Colors.RESET}"
+        )
+    elif noise_source == "mlx":
         noise = mx.random.normal(target_shape)
     elif noise_source == "torch":
         noise = _torch_randn(target_shape, seed, torch_python=torch_python)
@@ -1073,6 +1312,12 @@ def generate_video(
         mx.eval(latents)
 
     print(f"{Colors.DIM}  Denoising: {time.time() - t3:.1f}s{Colors.RESET}")
+
+    if dump_final_latents_npz:
+        _dump_latents_npz(dump_final_latents_npz, latents, config)
+        print(
+            f"{Colors.DIM}  Final latents dumped to {dump_final_latents_npz}{Colors.RESET}"
+        )
 
     # Diagnostic: per-temporal-position latent statistics
     if debug_latents:
@@ -1350,6 +1595,51 @@ def build_parser() -> argparse.ArgumentParser:
             "Python executable used when --noise-source torch should generate "
             "noise outside the active environment"
         ),
+    )
+    parser.add_argument(
+        "--t2v-lightning-preset",
+        action="store_true",
+        help=(
+            "Apply Wan2.2 T2V Lightning reference defaults: T2V Lightning LoRAs, "
+            "8 steps, Euler, comfy-simple sigmas, guide scale 1, shift 5, "
+            "refiner start 0.125, Torch noise, reference negative prompt, and 24 fps."
+        ),
+    )
+    parser.add_argument(
+        "--positive-conditioning-npz",
+        type=str,
+        default=None,
+        help=(
+            "Load raw positive text-conditioning embeddings from an NPZ file "
+            "and bypass MLX T5 encoding (diagnostic)"
+        ),
+    )
+    parser.add_argument(
+        "--negative-conditioning-npz",
+        type=str,
+        default=None,
+        help=(
+            "Load raw negative text-conditioning embeddings from an NPZ file "
+            "(required with --positive-conditioning-npz when CFG is enabled)"
+        ),
+    )
+    parser.add_argument(
+        "--dump-text-conditioning-npz",
+        type=str,
+        default=None,
+        help="Save MLX raw T5 text-conditioning embeddings to an NPZ file",
+    )
+    parser.add_argument(
+        "--dump-final-latents-npz",
+        type=str,
+        default=None,
+        help="Save final denoised latents to an NPZ file before VAE decode",
+    )
+    parser.add_argument(
+        "--initial-latents-npz",
+        type=str,
+        default=None,
+        help="Load initial noise/latents from an NPZ file instead of RNG",
     )
     parser.add_argument(
         "--lora",
