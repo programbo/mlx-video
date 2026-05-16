@@ -4,6 +4,8 @@ import argparse
 import gc
 import math
 import random
+import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -88,6 +90,33 @@ def _iteration_output_path(
     return Path(output_dir) / filename
 
 
+def _torch_randn(shape: tuple[int, ...], seed: int, torch_python: str | None = None) -> mx.array:
+    """Generate CPU Torch-compatible random normal noise."""
+    if torch_python is None:
+        try:
+            import torch
+        except ImportError as exc:
+            raise RuntimeError(
+                "--noise-source torch requires torch in the active Python or --torch-python"
+            ) from exc
+
+        generator = torch.Generator(device="cpu").manual_seed(seed)
+        return mx.array(torch.randn(shape, generator=generator).numpy())
+
+    with tempfile.NamedTemporaryFile(suffix=".npy") as fh:
+        script = (
+            "import numpy as np, torch, sys; "
+            "shape=tuple(int(x) for x in sys.argv[2].split(',')); "
+            "g=torch.Generator(device='cpu').manual_seed(int(sys.argv[3])); "
+            "np.save(sys.argv[1], torch.randn(shape, generator=g).numpy())"
+        )
+        subprocess.run(
+            [torch_python, "-c", script, fh.name, ",".join(map(str, shape)), str(seed)],
+            check=True,
+        )
+        return mx.array(np.load(fh.name))
+
+
 def _best_output_size(w, h, dw, dh, max_area):
     """Compute the best output resolution that fits within max_area while
     preserving the input aspect ratio and satisfying alignment constraints.
@@ -127,6 +156,8 @@ def generate_video(
     output_path: str = "output.mp4",
     fps: int | None = None,
     scheduler: str = "unipc",
+    noise_source: str = "mlx",
+    torch_python: str | None = None,
     loras: list | None = None,
     loras_high: list | None = None,
     loras_low: list | None = None,
@@ -153,6 +184,8 @@ def generate_video(
         output_path: Output video path
         fps: Output frames per second (None = use config default)
         scheduler: Solver type: 'euler', 'dpm++', or 'unipc' (default)
+        noise_source: Initial latent noise source: 'mlx' (default) or 'torch'
+        torch_python: Optional Python executable used to generate Torch RNG noise
         loras: Optional list of (path, strength) tuples applied to all models
         loras_high: Optional list of (path, strength) tuples for high-noise model only
         loras_low: Optional list of (path, strength) tuples for low-noise model only
@@ -595,7 +628,13 @@ def generate_video(
     sched.set_timesteps(steps, shift=shift)
 
     # Generate initial noise
-    noise = mx.random.normal(target_shape)
+    if noise_source == "mlx":
+        noise = mx.random.normal(target_shape)
+    elif noise_source == "torch":
+        noise = _torch_randn(target_shape, seed, torch_python=torch_python)
+        print(f"{Colors.DIM}  Initial latents generated with Torch RNG{Colors.RESET}")
+    else:
+        raise ValueError(f"Unsupported noise source: {noise_source}")
 
     # I2V initialization: TI2V-5B blends image with noise, I2V-14B uses pure noise
     if is_i2v_mask_blend:
@@ -956,6 +995,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Diffusion solver: euler (1st order), dpm++ (2nd order), unipc (2nd order PC, default/official)",
     )
     parser.add_argument(
+        "--noise-source",
+        choices=["mlx", "torch"],
+        default="mlx",
+        help=(
+            "Initial latent noise source. Use 'torch' for PyTorch-compatible "
+            "seed parity checks; default: mlx"
+        ),
+    )
+    parser.add_argument(
+        "--torch-python",
+        default=None,
+        help=(
+            "Python executable used when --noise-source torch should generate "
+            "noise outside the active environment"
+        ),
+    )
+    parser.add_argument(
         "--lora",
         nargs=2,
         action="append",
@@ -1103,6 +1159,8 @@ def main():
             output_path=output_path,
             fps=args.fps,
             scheduler=args.scheduler,
+            noise_source=args.noise_source,
+            torch_python=args.torch_python,
             loras=loras,
             loras_high=loras_high,
             loras_low=loras_low,
