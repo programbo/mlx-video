@@ -17,6 +17,7 @@ from tqdm import tqdm
 from mlx_video.models.wan_2.i2v_utils import build_i2v_mask, preprocess_image
 from mlx_video.models.wan_2.utils import (
     encode_text,
+    load_t5_encoder_fp8_scaled,
     load_t5_encoder,
     load_vae_decoder,
     load_vae_encoder,
@@ -61,6 +62,7 @@ WAN22_T2V_LIGHTNING_HIGH_PATH = (
 WAN22_T2V_LIGHTNING_LOW_PATH = (
     "/Volumes/Jove/Models/loras/WAN2.2/T2V/Lightning 4Steps A14B FP16 LOW.safetensors"
 )
+FP8_SCALED_TEXT_ENCODER_FILENAME = "umt5_xxl_fp8_e4m3fn_scaled.safetensors"
 
 CONFIG_KEYS = {
     "model_dir",
@@ -84,6 +86,8 @@ CONFIG_KEYS = {
     "euler_output",
     "noise_source",
     "torch_python",
+    "text_encoder",
+    "text_encoder_dir",
     "t2v_lightning_preset",
     "positive_conditioning_npz",
     "negative_conditioning_npz",
@@ -108,6 +112,7 @@ CHOICES = {
     "sigma_schedule": {"official", "comfy-simple"},
     "euler_output": {"velocity", "denoised"},
     "noise_source": {"mlx", "torch"},
+    "text_encoder": {"mlx", "fp8-scaled"},
     "tiling": {
         "auto",
         "none",
@@ -119,6 +124,44 @@ CHOICES = {
     },
     "iteration_seed": {"same", "increment", "random"},
 }
+
+
+def _candidate_text_encoder_dirs(
+    model_dir: Path, text_encoder_dir: str | None
+) -> list[Path]:
+    if text_encoder_dir:
+        return [Path(text_encoder_dir).expanduser()]
+    return [
+        model_dir / "text_encoders",
+        model_dir.parent / "text_encoders",
+        Path.cwd() / "text_encoders",
+    ]
+
+
+def _resolve_text_encoder(
+    requested: str, model_dir: Path, text_encoder_dir: str | None
+) -> tuple[str, Path, str | None]:
+    """Resolve the text encoder backend, path, and optional fallback warning."""
+    if requested == "mlx":
+        return "mlx", model_dir / "t5_encoder.safetensors", None
+    if requested != "fp8-scaled":
+        raise ValueError(f"Unsupported text encoder: {requested}")
+
+    searched = []
+    for directory in _candidate_text_encoder_dirs(model_dir, text_encoder_dir):
+        candidate = directory / FP8_SCALED_TEXT_ENCODER_FILENAME
+        searched.append(candidate)
+        if candidate.exists():
+            return "fp8-scaled", candidate, None
+
+    fallback = model_dir / "t5_encoder.safetensors"
+    locations = ", ".join(str(path) for path in searched)
+    warning = (
+        f"Requested --text-encoder fp8-scaled but {FP8_SCALED_TEXT_ENCODER_FILENAME} "
+        f"was not found. Searched: {locations}. Falling back to MLX text encoder: "
+        f"{fallback}"
+    )
+    return "mlx", fallback, warning
 
 
 def _crop_decoded_video(video: np.ndarray, num_frames: int) -> np.ndarray:
@@ -402,6 +445,8 @@ def _run_generation_args(args: argparse.Namespace) -> None:
             euler_output=args.euler_output,
             noise_source=args.noise_source,
             torch_python=args.torch_python,
+            text_encoder=args.text_encoder,
+            text_encoder_dir=args.text_encoder_dir,
             t2v_lightning_preset=args.t2v_lightning_preset,
             positive_conditioning_npz=args.positive_conditioning_npz,
             negative_conditioning_npz=args.negative_conditioning_npz,
@@ -580,6 +625,8 @@ def generate_video(
     euler_output: str = "velocity",
     noise_source: str = "mlx",
     torch_python: str | None = None,
+    text_encoder: str = "mlx",
+    text_encoder_dir: str | None = None,
     t2v_lightning_preset: bool = False,
     positive_conditioning_npz: str | None = None,
     negative_conditioning_npz: str | None = None,
@@ -619,6 +666,8 @@ def generate_video(
         euler_output: Euler model-output interpretation: 'velocity' or 'denoised'
         noise_source: Initial latent noise source: 'mlx' (default) or 'torch'
         torch_python: Optional Python executable used to generate Torch RNG noise
+        text_encoder: Text encoder backend: 'mlx' (default) or 'fp8-scaled'
+        text_encoder_dir: Optional directory containing external text encoder weights
         t2v_lightning_preset: Apply Wan2.2 T2V Lightning reference defaults.
         positive_conditioning_npz: Optional raw positive text-conditioning NPZ
             to bypass MLX T5 encoding.
@@ -825,6 +874,9 @@ def generate_video(
         neg_prompt_resolved = config.sample_neg_prompt
     else:
         neg_prompt_resolved = negative_prompt
+    resolved_text_encoder, resolved_text_encoder_path, text_encoder_warning = (
+        _resolve_text_encoder(text_encoder, model_dir, text_encoder_dir)
+    )
     print(f"{Colors.CYAN}{'='*60}")
     print(f"  {version_str} {pipeline_str} Generation (MLX, {mode_str})")
     print(f"{'='*60}{Colors.RESET}")
@@ -846,6 +898,12 @@ def generate_video(
         f"{Colors.DIM}  Sigma schedule: {sigma_schedule}, Euler output: {euler_output}{Colors.RESET}"
     )
     print(f"{Colors.DIM}  Noise source: {noise_source}{Colors.RESET}")
+    print(
+        f"{Colors.DIM}  Text encoder: {resolved_text_encoder} "
+        f"({resolved_text_encoder_path}){Colors.RESET}"
+    )
+    if text_encoder_warning:
+        print(f"{Colors.YELLOW}  Warning: {text_encoder_warning}{Colors.RESET}")
     if resolved_refiner_start is not None:
         low_noise_steps = steps - high_noise_steps
         print(
@@ -854,7 +912,7 @@ def generate_video(
             f"LNE {low_noise_steps} step{'s' if low_noise_steps != 1 else ''})"
         )
     if t2v_lightning_preset:
-        print(f"  T2V Lightning preset: enabled")
+        print(f"  Reference sampling preset: enabled")
     if cfg_disabled:
         print(f"  CFG: disabled (guide_scale≤1 → B=1 fast path, 2x denoising speedup)")
     print(f"{Colors.RESET}")
@@ -934,8 +992,10 @@ def generate_video(
         print(f"  Text conditioning load: {time.time() - t1:.1f}s{Colors.RESET}")
     else:
         print(f"\n{Colors.BLUE}Loading T5 encoder...{Colors.RESET}")
-        t5_path = model_dir / "t5_encoder.safetensors"
-        t5_encoder = load_t5_encoder(t5_path, config)
+        if resolved_text_encoder == "fp8-scaled":
+            t5_encoder = load_t5_encoder_fp8_scaled(resolved_text_encoder_path, config)
+        else:
+            t5_encoder = load_t5_encoder(resolved_text_encoder_path, config)
 
         # Load tokenizer
         from transformers import AutoTokenizer
@@ -1597,13 +1657,24 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--text-encoder",
+        choices=["mlx", "fp8-scaled"],
+        default="mlx",
+        help="Text encoder backend: mlx (default) or fp8-scaled",
+    )
+    parser.add_argument(
+        "--text-encoder-dir",
+        default=None,
+        help=(
+            "Directory containing external text encoder weights. For "
+            "--text-encoder fp8-scaled, this directory must contain "
+            f"{FP8_SCALED_TEXT_ENCODER_FILENAME}."
+        ),
+    )
+    parser.add_argument(
         "--t2v-lightning-preset",
         action="store_true",
-        help=(
-            "Apply Wan2.2 T2V Lightning reference defaults: T2V Lightning LoRAs, "
-            "8 steps, Euler, comfy-simple sigmas, guide scale 1, shift 5, "
-            "refiner start 0.125, Torch noise, reference negative prompt, and 24 fps."
-        ),
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--positive-conditioning-npz",
