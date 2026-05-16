@@ -26,6 +26,7 @@ dependencies = [
     "imageio-ffmpeg>=0.6.0",
     "ftfy",
     "PyYAML>=6.0.2",
+    "torch>=2.12.0",
 ]
 license = {text="MIT"}
 authors = [
