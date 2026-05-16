@@ -36,16 +36,56 @@ def _compute_sigmas(
     return np.append(sigmas, 0.0).astype(np.float32)
 
 
+def _compute_comfy_simple_sigmas(
+    num_steps: int, shift: float = 1.0, num_train_timesteps: int = 1000
+) -> np.ndarray:
+    """Compute ComfyUI ModelSamplingSD3 + simple scheduler sigmas."""
+    t = np.arange(1, num_train_timesteps + 1, dtype=np.float64) / num_train_timesteps
+    sigmas = shift * t / (1.0 + (shift - 1.0) * t)
+    stride = len(sigmas) / num_steps
+    selected = [
+        float(sigmas[-(1 + int(step * stride))]) for step in range(num_steps)
+    ]
+    selected.append(0.0)
+    return np.array(selected, dtype=np.float32)
+
+
+def compute_sigma_schedule(
+    num_steps: int,
+    shift: float = 1.0,
+    num_train_timesteps: int = 1000,
+    sigma_schedule: str = "official",
+) -> np.ndarray:
+    """Compute a named sigma schedule for Wan inference."""
+    if sigma_schedule == "official":
+        return _compute_sigmas(num_steps, shift, num_train_timesteps)
+    if sigma_schedule == "comfy-simple":
+        return _compute_comfy_simple_sigmas(num_steps, shift, num_train_timesteps)
+    raise ValueError(f"Unsupported sigma schedule: {sigma_schedule}")
+
+
 class FlowMatchEulerScheduler:
     """1st-order Euler scheduler for flow matching diffusion."""
 
-    def __init__(self, num_train_timesteps: int = 1000):
+    def __init__(
+        self,
+        num_train_timesteps: int = 1000,
+        euler_output: str = "velocity",
+    ):
         self.num_train_timesteps = num_train_timesteps
+        self.euler_output = euler_output
         self.timesteps = None
         self.sigmas = None
 
-    def set_timesteps(self, num_steps: int, shift: float = 1.0):
-        sigmas = _compute_sigmas(num_steps, shift, self.num_train_timesteps)
+    def set_timesteps(
+        self,
+        num_steps: int,
+        shift: float = 1.0,
+        sigma_schedule: str = "official",
+    ):
+        sigmas = compute_sigma_schedule(
+            num_steps, shift, self.num_train_timesteps, sigma_schedule
+        )
         self.sigmas = mx.array(sigmas)
         # Integer timesteps to match reference (model trained with int timesteps)
         self.timesteps = mx.array(
@@ -61,12 +101,19 @@ class FlowMatchEulerScheduler:
         timestep,
         sample: mx.array,
     ) -> mx.array:
-        """Euler step: x_next = x + (sigma_next - sigma_cur) * v."""
+        """Euler step with configurable model-output interpretation."""
+        sigma_cur = self._sigmas_float[self._step_index]
         dt = (
             self._sigmas_float[self._step_index + 1]
-            - self._sigmas_float[self._step_index]
+            - sigma_cur
         )
-        x_next = sample + dt * model_output
+        if self.euler_output == "velocity":
+            derivative = model_output
+        elif self.euler_output == "denoised":
+            derivative = (sample - model_output) / sigma_cur
+        else:
+            raise ValueError(f"Unsupported Euler output interpretation: {self.euler_output}")
+        x_next = sample + dt * derivative
         self._step_index += 1
         return x_next
 
@@ -92,8 +139,15 @@ class FlowDPMPP2MScheduler:
         self.timesteps = None
         self.sigmas = None
 
-    def set_timesteps(self, num_steps: int, shift: float = 1.0):
-        sigmas = _compute_sigmas(num_steps, shift, self.num_train_timesteps)
+    def set_timesteps(
+        self,
+        num_steps: int,
+        shift: float = 1.0,
+        sigma_schedule: str = "official",
+    ):
+        sigmas = compute_sigma_schedule(
+            num_steps, shift, self.num_train_timesteps, sigma_schedule
+        )
         self.sigmas = mx.array(sigmas)
         self.timesteps = mx.array(
             (sigmas[:-1] * self.num_train_timesteps).astype(np.int64).astype(np.float32)
@@ -214,8 +268,15 @@ class FlowUniPCScheduler:
         self.timesteps = None
         self.sigmas = None
 
-    def set_timesteps(self, num_steps: int, shift: float = 1.0):
-        sigmas = _compute_sigmas(num_steps, shift, self.num_train_timesteps)
+    def set_timesteps(
+        self,
+        num_steps: int,
+        shift: float = 1.0,
+        sigma_schedule: str = "official",
+    ):
+        sigmas = compute_sigma_schedule(
+            num_steps, shift, self.num_train_timesteps, sigma_schedule
+        )
         self.sigmas = mx.array(sigmas)
         self.timesteps = mx.array(
             (sigmas[:-1] * self.num_train_timesteps).astype(np.int64).astype(np.float32)

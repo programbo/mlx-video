@@ -206,6 +206,28 @@ def test_config_resolution_accepts_refiner_start(tmp_path):
     assert runs[0].refiner_start == 0.125
 
 
+def test_config_resolution_accepts_sigma_and_euler_options(tmp_path):
+    from mlx_video.models.wan_2.generate import _resolve_generation_runs, build_parser
+
+    path = tmp_path / "run.json"
+    path.write_text(
+        json.dumps(
+            {
+                "model_dir": "model",
+                "prompt": "prompt",
+                "sigma_schedule": "comfy-simple",
+                "euler_output": "denoised",
+            }
+        )
+    )
+    parser = build_parser()
+    args = parser.parse_args(["--config", str(path)])
+    runs = _resolve_generation_runs(parser, args, set())
+
+    assert runs[0].sigma_schedule == "comfy-simple"
+    assert runs[0].euler_output == "denoised"
+
+
 def test_config_resolution_detects_equals_style_cli_overrides(tmp_path):
     from mlx_video.models.wan_2.generate import (
         _explicit_cli_dests,
@@ -370,6 +392,76 @@ def test_wan_parser_rejects_unknown_scheduler():
                 "--prompt",
                 "prompt",
                 "--scheduler",
+                "unknown",
+            ]
+        )
+
+
+def test_wan_parser_accepts_sigma_schedule_choices():
+    from mlx_video.models.wan_2.generate import build_parser
+
+    parser = build_parser()
+
+    for sigma_schedule in ("official", "comfy-simple"):
+        args = parser.parse_args(
+            [
+                "--model-dir",
+                "model",
+                "--prompt",
+                "prompt",
+                "--sigma-schedule",
+                sigma_schedule,
+            ]
+        )
+        assert args.sigma_schedule == sigma_schedule
+
+
+def test_wan_parser_rejects_unknown_sigma_schedule():
+    from mlx_video.models.wan_2.generate import build_parser
+
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(
+            [
+                "--model-dir",
+                "model",
+                "--prompt",
+                "prompt",
+                "--sigma-schedule",
+                "unknown",
+            ]
+        )
+
+
+def test_wan_parser_accepts_euler_output_choices():
+    from mlx_video.models.wan_2.generate import build_parser
+
+    parser = build_parser()
+
+    for euler_output in ("velocity", "denoised"):
+        args = parser.parse_args(
+            [
+                "--model-dir",
+                "model",
+                "--prompt",
+                "prompt",
+                "--euler-output",
+                euler_output,
+            ]
+        )
+        assert args.euler_output == euler_output
+
+
+def test_wan_parser_rejects_unknown_euler_output():
+    from mlx_video.models.wan_2.generate import build_parser
+
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(
+            [
+                "--model-dir",
+                "model",
+                "--prompt",
+                "prompt",
+                "--euler-output",
                 "unknown",
             ]
         )
