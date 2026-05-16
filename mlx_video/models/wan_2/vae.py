@@ -282,11 +282,35 @@ class Resample(nn.Module):
         b, c, t, h, w = x.shape
 
         if self.mode == "upsample3d":
-            # Temporal upsample via learned conv
-            x_t = self.time_conv(x)  # [B, 2C, T, H, W]
-            x_t = x_t.reshape(b, 2, c, t, h, w)
-            x = mx.stack([x_t[:, 0], x_t[:, 1]], axis=3).reshape(b, c, t * 2, h, w)
-            t = t * 2
+            if feat_cache is not None:
+                idx = feat_idx[0]
+                if feat_cache[idx] is None:
+                    # Reference chunked decoder skips temporal expansion for
+                    # the first chunk and uses it as future context.
+                    feat_cache[idx] = "Rep"
+                    feat_idx[0] += 1
+                else:
+                    cache_x = x[:, :, -CACHE_T:]
+                    if feat_cache[idx] == "Rep":
+                        x_t = self.time_conv(x)
+                    else:
+                        x_t = self.time_conv(x, cache_x=feat_cache[idx])
+                    feat_cache[idx] = cache_x
+                    feat_idx[0] += 1
+
+                    x_t = x_t.reshape(b, 2, c, t, h, w)
+                    x = mx.stack([x_t[:, 0], x_t[:, 1]], axis=3).reshape(
+                        b, c, t * 2, h, w
+                    )
+                    t = t * 2
+            else:
+                # Non-chunked decode still applies the learned temporal upsample.
+                x_t = self.time_conv(x)  # [B, 2C, T, H, W]
+                x_t = x_t.reshape(b, 2, c, t, h, w)
+                x = mx.stack([x_t[:, 0], x_t[:, 1]], axis=3).reshape(
+                    b, c, t * 2, h, w
+                )
+                t = t * 2
 
         if self.mode.startswith("upsample"):
             # Per-frame spatial upsample: nearest 2x + Conv2d
@@ -375,19 +399,67 @@ class Decoder3d(nn.Module):
             CausalConv3d(dims[-1], 3, 3, padding=1),  # [2]
         ]
 
-    def __call__(self, x: mx.array) -> mx.array:
-        """x: [B, z_dim, T, H, W] -> [B, 3, T_out, H_out, W_out]"""
-        x = self.conv1(x)
+    def _run_up(self, layer_idx: int, x: mx.array, feat_cache, feat_idx, out_chunks):
+        if layer_idx >= len(self.upsamples):
+            x = nn.silu(self.head[0](x))
+            if feat_cache is not None:
+                idx = feat_idx[0]
+                cache_x = x[:, :, -CACHE_T:]
+                x = self.head[2](x, cache_x=feat_cache[idx])
+                feat_cache[idx] = cache_x
+                feat_idx[0] += 1
+            else:
+                x = self.head[2](x)
+            out_chunks.append(x)
+            return
+
+        layer = self.upsamples[layer_idx]
+        if feat_cache is not None and isinstance(layer, (ResidualBlock, Resample)):
+            x = layer(x, feat_cache=feat_cache, feat_idx=feat_idx)
+        else:
+            x = layer(x)
+
+        if isinstance(layer, Resample) and layer.mode == "upsample3d" and x.shape[2] > 2:
+            for frame_idx in range(0, x.shape[2], 2):
+                self._run_up(
+                    layer_idx + 1,
+                    x[:, :, frame_idx : frame_idx + 2],
+                    feat_cache,
+                    feat_idx.copy() if feat_idx is not None else None,
+                    out_chunks,
+                )
+            return
+
+        self._run_up(layer_idx + 1, x, feat_cache, feat_idx, out_chunks)
+
+    def __call__(
+        self, x: mx.array, feat_cache=None, feat_idx=None
+    ) -> mx.array | list[mx.array]:
+        """Decode [B, z_dim, T, H, W].
+
+        Returns a single tensor for normal calls and a list of finalized chunks
+        for cached chunked decoding.
+        """
+        if feat_cache is not None:
+            idx = feat_idx[0]
+            cache_x = x[:, :, -CACHE_T:]
+            x = self.conv1(x, cache_x=feat_cache[idx])
+            feat_cache[idx] = cache_x
+            feat_idx[0] += 1
+        else:
+            x = self.conv1(x)
 
         for layer in self.middle:
-            x = layer(x)
+            if feat_cache is not None and isinstance(layer, ResidualBlock):
+                x = layer(x, feat_cache=feat_cache, feat_idx=feat_idx)
+            else:
+                x = layer(x)
 
-        for layer in self.upsamples:
-            x = layer(x)
-
-        x = nn.silu(self.head[0](x))
-        x = self.head[2](x)
-        return x
+        out_chunks = []
+        self._run_up(0, x, feat_cache, feat_idx, out_chunks)
+        if feat_cache is None:
+            return mx.concatenate(out_chunks, axis=2)
+        return out_chunks
 
 
 class Encoder3d(nn.Module):
@@ -571,9 +643,41 @@ class WanVAE(nn.Module):
         inv_std = self.inv_std.reshape(1, -1, 1, 1, 1)
         z = z / inv_std + mean
 
+        iter_count = 1 + z.shape[2] // 2
+        feat_cache = None
+        if iter_count > 1:
+            feat_cache = [None] * self._count_decoder_cache_slots()
+
         x = self.conv2(z)
-        out = self.decoder(x)
-        return mx.clip(out, -1, 1)
+        if feat_cache is None:
+            out = self.decoder(x)
+            return mx.clip(out, -1, 1)
+
+        out_chunks = []
+        for i in range(iter_count):
+            feat_idx = [0]
+            if i == 0:
+                chunk = x[:, :, i : i + 1]
+            else:
+                chunk = x[:, :, 1 + 2 * (i - 1) : 1 + 2 * i]
+            out_chunks.extend(
+                self.decoder(chunk, feat_cache=feat_cache, feat_idx=feat_idx)
+            )
+        return mx.clip(mx.concatenate(out_chunks, axis=2), -1, 1)
+
+    def _count_decoder_cache_slots(self) -> int:
+        """Count CausalConv3d slots that participate in chunked decoding."""
+        count = 1  # decoder.conv1
+        for layer in self.decoder.middle:
+            if isinstance(layer, ResidualBlock):
+                count += 2
+        for layer in self.decoder.upsamples:
+            if isinstance(layer, ResidualBlock):
+                count += 2
+            elif isinstance(layer, Resample) and layer.mode == "upsample3d":
+                count += 1
+        count += 1  # decoder.head CausalConv3d
+        return count
 
     def decode_tiled(self, z: mx.array, tiling_config=None) -> mx.array:
         """Decode latent to video using tiling to reduce memory usage.
@@ -615,9 +719,7 @@ class WanVAE(nn.Module):
         z_denorm = z / inv_std + mean
 
         def tile_decode(tile_latents, **kwargs):
-            x = self.conv2(tile_latents)
-            out = self.decoder(x)
-            return mx.clip(out, -1, 1)
+            return self.decode((tile_latents - mean) * inv_std)
 
         return decode_with_tiling(
             decoder_fn=tile_decode,

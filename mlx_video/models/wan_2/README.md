@@ -326,6 +326,8 @@ python -m mlx_video.wan2.generate \
 **VAE** — 3D causal convolution decoder (72.6M parameters)
 - Latent channels: 16
 - Compression: 4× temporal, 8× spatial
+- Wan2.1 decoding uses chunked temporal cache handling for multi-frame latents
+  so tiled and non-tiled decode preserve the same frame contract.
 
 ---
 

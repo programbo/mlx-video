@@ -5,9 +5,9 @@ import numpy as np
 
 from mlx_video.models.ltx_2.video_vae.tiling import (
     TilingConfig,
-    decode_with_tiling,
     split_in_spatial,
 )
+from mlx_video.models.wan_2.tiling import decode_with_tiling
 
 
 class TestNonCausalTemporal:
