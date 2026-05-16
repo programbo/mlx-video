@@ -98,6 +98,7 @@ CONFIG_KEYS = {
     "lora_high",
     "lora_low",
     "tiling",
+    "legacy_vae_decode",
     "no_compile",
     "trim_first_frames",
     "debug_latents",
@@ -457,6 +458,7 @@ def _run_generation_args(args: argparse.Namespace) -> None:
             loras_high=loras_high,
             loras_low=loras_low,
             tiling=args.tiling,
+            legacy_vae_decode=args.legacy_vae_decode,
             no_compile=args.no_compile,
             trim_first_frames=args.trim_first_frames,
             debug_latents=args.debug_latents,
@@ -637,6 +639,7 @@ def generate_video(
     loras_high: list | None = None,
     loras_low: list | None = None,
     tiling: str = "auto",
+    legacy_vae_decode: bool = False,
     no_compile: bool = False,
     trim_first_frames: int = 0,
     debug_latents: bool = False,
@@ -684,6 +687,9 @@ def generate_video(
             - "default", "aggressive", "conservative": Preset tiling configs
             - "spatial": Spatial tiling only
             - "temporal": Temporal tiling only
+        legacy_vae_decode: Preserve the old Wan2.1/14B single-frame VAE
+            temporal upsample behavior for comparisons. Defaults to False,
+            which uses reference single-frame decoding.
         no_compile: If True, skip mx.compile on models (useful for debugging)
         trim_first_frames: Number of temporal latent positions to generate extra
             and discard from the start. Each position = 4 pixel frames. Use 1
@@ -902,6 +908,9 @@ def generate_video(
         f"{Colors.DIM}  Text encoder: {resolved_text_encoder} "
         f"({resolved_text_encoder_path}){Colors.RESET}"
     )
+    if config.vae_z_dim == 16:
+        wan21_vae_decode = "legacy" if legacy_vae_decode else "reference"
+        print(f"{Colors.DIM}  Wan2.1 VAE decode: {wan21_vae_decode}{Colors.RESET}")
     if text_encoder_warning:
         print(f"{Colors.YELLOW}  Warning: {text_encoder_warning}{Colors.RESET}")
     if resolved_refiner_start is not None:
@@ -1488,10 +1497,20 @@ def generate_video(
         video = (video + 1.0) / 2.0
         video = np.clip(video * 255.0, 0, 255).astype(np.uint8)
     else:
+        if (
+            not legacy_vae_decode
+            and tiling_config is not None
+            and latents.shape[1] == 1
+        ):
+            tiling_config = None
+            print(
+                f"{Colors.DIM}  Tiling disabled for single-frame Wan2.1 VAE reference decode{Colors.RESET}"
+            )
         if tiling_config is not None:
             video = vae.decode_tiled(latents[None], tiling_config)
         else:
-            video = vae.decode(latents[None])
+            wan21_vae_decode = "legacy" if legacy_vae_decode else "reference"
+            video = vae.decode(latents[None], decode_mode=wan21_vae_decode)
         mx.eval(video)
         print(f"{Colors.DIM}  VAE decode: {time.time() - t4:.1f}s{Colors.RESET}")
 
@@ -1747,6 +1766,14 @@ def build_parser() -> argparse.ArgumentParser:
             "temporal",
         ],
         help="VAE tiling mode to reduce memory during decoding (default: auto)",
+    )
+    parser.add_argument(
+        "--legacy-vae-decode",
+        action="store_true",
+        help=(
+            "Use the old Wan2.1/14B single-frame VAE temporal upsample path "
+            "instead of the reference single-frame decode"
+        ),
     )
     parser.add_argument(
         "--no-compile",

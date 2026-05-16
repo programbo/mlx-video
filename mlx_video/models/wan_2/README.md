@@ -244,6 +244,7 @@ sigma_schedule: official
 euler_output: velocity
 text_encoder: mlx
 text_encoder_dir: null
+legacy_vae_decode: false
 positive_conditioning_npz: null
 negative_conditioning_npz: null
 dump_text_conditioning_npz: null
@@ -288,7 +289,7 @@ python -m mlx_video.wan_2.generate \
     --config third.yml
 ```
 
-Supported config keys are: `model_dir`, `prompt`, `image`, `negative_prompt`, `no_negative_prompt`, `width`, `height`, `num_frames`, `steps`, `guide_scale`, `shift`, `refiner_start`, `seed`, `output_path`, `fps`, `output_last_frame`, `scheduler`, `sigma_schedule`, `euler_output`, `noise_source`, `torch_python`, `text_encoder`, `text_encoder_dir`, `positive_conditioning_npz`, `negative_conditioning_npz`, `dump_text_conditioning_npz`, `dump_final_latents_npz`, `initial_latents_npz`, `lora`, `lora_high`, `lora_low`, `tiling`, `no_compile`, `trim_first_frames`, `debug_latents`, `iterations`, `iteration_seed`, `output_prefix`, and `output_suffix`.
+Supported config keys are: `model_dir`, `prompt`, `image`, `negative_prompt`, `no_negative_prompt`, `width`, `height`, `num_frames`, `steps`, `guide_scale`, `shift`, `refiner_start`, `seed`, `output_path`, `fps`, `output_last_frame`, `scheduler`, `sigma_schedule`, `euler_output`, `noise_source`, `torch_python`, `text_encoder`, `text_encoder_dir`, `positive_conditioning_npz`, `negative_conditioning_npz`, `dump_text_conditioning_npz`, `dump_final_latents_npz`, `initial_latents_npz`, `lora`, `lora_high`, `lora_low`, `tiling`, `legacy_vae_decode`, `no_compile`, `trim_first_frames`, `debug_latents`, `iterations`, `iteration_seed`, `output_prefix`, and `output_suffix`.
 
 #### Text Encoder
 
@@ -360,6 +361,7 @@ The NPZ bridge options are diagnostic tools for isolating where parity diverges:
 | `--dump-final-latents-npz` | — | Save final denoised latents to NPZ before VAE decode |
 | `--trim-first-frames` | `0` | Drop N leading frames (fixes first-frame artifacts on 14B models) |
 | `--tiling` | `auto` | VAE tiling: `auto`, `none`, `spatial`, `temporal` |
+| `--legacy-vae-decode` | off | Use the old Wan2.1/14B single-frame VAE temporal upsample path instead of reference decoding |
 
 ### Quantization (Reduced Memory)
 
