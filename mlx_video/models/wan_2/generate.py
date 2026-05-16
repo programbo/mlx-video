@@ -20,7 +20,11 @@ from mlx_video.models.wan_2.utils import (
     load_wan_model,
 )
 from mlx_video.models.wan_2.postprocess import save_video
-from mlx_video.utils import save_last_frame_png, should_output_last_frame
+from mlx_video.utils import (
+    format_output_value,
+    save_last_frame_png,
+    should_output_last_frame,
+)
 
 
 class Colors:
@@ -46,6 +50,42 @@ def _crop_decoded_video(video: np.ndarray, num_frames: int) -> np.ndarray:
     if video.shape[0] <= num_frames:
         return video
     return video[-num_frames:]
+
+
+def _iteration_seed(base_seed: int, iteration: int, strategy: str) -> int:
+    """Resolve the concrete seed for an iteration."""
+    if strategy == "same":
+        return base_seed
+    if strategy == "increment":
+        if base_seed < 0:
+            base_seed = random.randint(0, 2**32 - 1)
+        return base_seed + iteration
+    if strategy == "random":
+        return random.randint(0, 2**32 - 1)
+    raise ValueError(f"Unsupported iteration seed strategy: {strategy}")
+
+
+def _iteration_output_path(
+    output_dir: str | Path,
+    *,
+    prefix: str,
+    suffix: str,
+    mode: str,
+    seed: int,
+    steps: int | None,
+    shift: float | None,
+    width: int,
+    height: int,
+) -> Path:
+    """Build a deterministic Wan iteration output path."""
+    suffix_part = f"-{suffix}" if suffix else ""
+    filename = (
+        f"{prefix}wan-{mode}-seed{seed}"
+        f"-s{format_output_value(steps)}"
+        f"-sh{format_output_value(shift)}"
+        f"-{width}x{height}{suffix_part}.mp4"
+    )
+    return Path(output_dir) / filename
 
 
 def _best_output_size(w, h, dw, dh, max_area):
@@ -970,6 +1010,23 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print per-temporal-position latent statistics after denoising (diagnostic)",
     )
+    parser.add_argument("--iterations", type=int, default=1)
+    parser.add_argument(
+        "--iteration-seed",
+        choices=["same", "increment", "random"],
+        default="increment",
+        help="Seed strategy for subsequent iterations",
+    )
+    parser.add_argument(
+        "--output-prefix",
+        default="",
+        help="String prepended to generated iteration filenames",
+    )
+    parser.add_argument(
+        "--output-suffix",
+        default="",
+        help="String appended to generated iteration filenames before .mp4",
+    )
     return parser
 
 
@@ -994,30 +1051,73 @@ def main():
             return None
         return [(path, float(strength)) for path, strength in lora_list]
 
-    generate_video(
-        model_dir=args.model_dir,
-        prompt=args.prompt,
-        negative_prompt=neg_prompt,
-        image=args.image,
-        width=args.width,
-        height=args.height,
-        num_frames=args.num_frames,
-        steps=args.steps,
-        guide_scale=guide_scale,
-        shift=args.shift,
-        seed=args.seed,
-        output_path=args.output_path,
-        fps=args.fps,
-        scheduler=args.scheduler,
-        loras=_parse_lora_args(args.lora),
-        loras_high=_parse_lora_args(args.lora_high),
-        loras_low=_parse_lora_args(args.lora_low),
-        tiling=args.tiling,
-        no_compile=args.no_compile,
-        trim_first_frames=args.trim_first_frames,
-        debug_latents=args.debug_latents,
-        output_last_frame=args.output_last_frame,
-    )
+    if args.iterations < 1:
+        raise SystemExit("--iterations must be at least 1")
+
+    loras = _parse_lora_args(args.lora)
+    loras_high = _parse_lora_args(args.lora_high)
+    loras_low = _parse_lora_args(args.lora_low)
+    output_dir = Path(args.output_path)
+    if args.iterations > 1:
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+    wall_times = []
+    mode = "i2v" if args.image else "t2v"
+    random_base_seed = args.seed
+    if args.iteration_seed == "increment" and random_base_seed < 0:
+        random_base_seed = random.randint(0, 2**32 - 1)
+
+    for iteration in range(args.iterations):
+        seed = _iteration_seed(random_base_seed, iteration, args.iteration_seed)
+        output_path = (
+            args.output_path
+            if args.iterations == 1
+            else str(
+                _iteration_output_path(
+                    output_dir,
+                    prefix=args.output_prefix,
+                    suffix=args.output_suffix,
+                    mode=mode,
+                    seed=seed,
+                    steps=args.steps,
+                    shift=args.shift,
+                    width=args.width,
+                    height=args.height,
+                )
+            )
+        )
+        print(f"[{iteration + 1}/{args.iterations}] seed={seed} output={output_path}")
+        started = time.time()
+        generate_video(
+            model_dir=args.model_dir,
+            prompt=args.prompt,
+            negative_prompt=neg_prompt,
+            image=args.image,
+            width=args.width,
+            height=args.height,
+            num_frames=args.num_frames,
+            steps=args.steps,
+            guide_scale=guide_scale,
+            shift=args.shift,
+            seed=seed,
+            output_path=output_path,
+            fps=args.fps,
+            scheduler=args.scheduler,
+            loras=loras,
+            loras_high=loras_high,
+            loras_low=loras_low,
+            tiling=args.tiling,
+            no_compile=args.no_compile,
+            trim_first_frames=args.trim_first_frames,
+            debug_latents=args.debug_latents,
+            output_last_frame=args.output_last_frame,
+        )
+        elapsed = time.time() - started
+        wall_times.append(elapsed)
+        print(f"[{iteration + 1}/{args.iterations}] wall_time={elapsed:.3f}s")
+
+    if args.iterations > 1:
+        print(f"Average wall time: {sum(wall_times) / len(wall_times):.3f}s")
 
 
 if __name__ == "__main__":
