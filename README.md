@@ -176,7 +176,7 @@ python -m mlx_video.wan_2.generate \
 
 LoRAs can be used with the `--lora-high` and `--lora-low` command line switches.
 
-For example, using the distilled [Wan2.2-Lightning](https://huggingface.co/lightx2v/Wan2.2-Lightning) LoRA for 4-step generation:
+For example, using a distilled Wan2.2-Lightning LoRA for 4-step generation:
 
 ```bash
 python -m mlx_video.wan_2.generate \
@@ -189,8 +189,8 @@ python -m mlx_video.wan_2.generate \
     --guide-scale 1 \
     --trim-first-frames 1 \
     --seed 2391784614 \
-    --lora-high /Volumes/SSD/Wan-AI/lightx2v/Wan2.2-Lightning/Wan2.2-T2V-A14B-4steps-lora-rank64-Seko-V2.0/high_noise_model.safetensors 1 \
-    --lora-low /Volumes/SSD/Wan-AI/lightx2v/Wan2.2-Lightning/Wan2.2-T2V-A14B-4steps-lora-rank64-Seko-V2.0/low_noise_model.safetensors 1
+    --lora-high /path/to/Wan2.2-Lightning/high_noise_model.safetensors 1 \
+    --lora-low /path/to/Wan2.2-Lightning/low_noise_model.safetensors 1
 ```
 
 ![Poodles](examples/poodles-wan.gif)

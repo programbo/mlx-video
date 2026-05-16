@@ -242,6 +242,12 @@ guide_scale: "3.0,4.0"
 refiner_start: 0.125
 sigma_schedule: official
 euler_output: velocity
+t2v_lightning_preset: false
+positive_conditioning_npz: null
+negative_conditioning_npz: null
+dump_text_conditioning_npz: null
+dump_final_latents_npz: null
+initial_latents_npz: null
 seed: 42
 output_path: wan22_t2v.mp4
 ```
@@ -281,7 +287,18 @@ python -m mlx_video.wan_2.generate \
     --config third.yml
 ```
 
-Supported config keys are: `model_dir`, `prompt`, `image`, `negative_prompt`, `no_negative_prompt`, `width`, `height`, `num_frames`, `steps`, `guide_scale`, `shift`, `refiner_start`, `seed`, `output_path`, `fps`, `output_last_frame`, `scheduler`, `sigma_schedule`, `euler_output`, `noise_source`, `torch_python`, `lora`, `lora_high`, `lora_low`, `tiling`, `no_compile`, `trim_first_frames`, `debug_latents`, `iterations`, `iteration_seed`, `output_prefix`, and `output_suffix`.
+Supported config keys are: `model_dir`, `prompt`, `image`, `negative_prompt`, `no_negative_prompt`, `width`, `height`, `num_frames`, `steps`, `guide_scale`, `shift`, `refiner_start`, `seed`, `output_path`, `fps`, `output_last_frame`, `scheduler`, `sigma_schedule`, `euler_output`, `noise_source`, `torch_python`, `t2v_lightning_preset`, `positive_conditioning_npz`, `negative_conditioning_npz`, `dump_text_conditioning_npz`, `dump_final_latents_npz`, `initial_latents_npz`, `lora`, `lora_high`, `lora_low`, `tiling`, `no_compile`, `trim_first_frames`, `debug_latents`, `iterations`, `iteration_seed`, `output_prefix`, and `output_suffix`.
+
+#### Reference Preset and Bridge Diagnostics
+
+`--t2v-lightning-preset` is a Wan2.2 T2V preset for comparing mlx-video against reference/Comfy runs. It fills omitted options with the reference contract: 8 steps, Euler, `comfy-simple` sigmas, guide scale 1, shift 5, `refiner_start` 0.125, Torch noise, 24 fps, the reference negative prompt, and T2V Lightning high/low LoRAs. Explicit CLI or config values still win.
+
+The NPZ bridge options are diagnostic tools for isolating where parity diverges:
+
+- `--initial-latents-npz` loads exact starting latents/noise instead of using RNG.
+- `--positive-conditioning-npz` and `--negative-conditioning-npz` load raw text conditioning and bypass MLX T5 encoding.
+- `--dump-text-conditioning-npz` saves MLX raw T5 conditioning.
+- `--dump-final-latents-npz` saves final denoised latents before VAE decode.
 
 #### Generation Options
 
@@ -310,6 +327,12 @@ Supported config keys are: `model_dir`, `prompt`, `image`, `negative_prompt`, `n
 | `--euler-output` | `velocity` | Euler output interpretation: `velocity` or `denoised` |
 | `--noise-source` | `mlx` | Initial latent noise source: `mlx` or `torch`; use `torch` for PyTorch parity checks |
 | `--torch-python` | active Python | Python executable used to generate Torch noise for `--noise-source torch` |
+| `--t2v-lightning-preset` | off | Apply Wan2.2 T2V Lightning reference defaults for comparison runs |
+| `--initial-latents-npz` | — | Load exact initial latents/noise from NPZ instead of RNG |
+| `--positive-conditioning-npz` | — | Load raw positive text conditioning from NPZ and bypass MLX T5 |
+| `--negative-conditioning-npz` | — | Load raw negative text conditioning when CFG is enabled |
+| `--dump-text-conditioning-npz` | — | Save MLX raw text conditioning to NPZ |
+| `--dump-final-latents-npz` | — | Save final denoised latents to NPZ before VAE decode |
 | `--trim-first-frames` | `0` | Drop N leading frames (fixes first-frame artifacts on 14B models) |
 | `--tiling` | `auto` | VAE tiling: `auto`, `none`, `spatial`, `temporal` |
 
@@ -397,7 +420,7 @@ python -m mlx_video.wan2.generate \
 
 LoRA's can be used with the `--lora-high` and `--lora-low` command line switches.
 
-For example, for using the the distilled [Wan2.2-Lightning](https://huggingface.co/lightx2v/Wan2.2-Lightning) LoRA, use the following command. Lightning speeds up generation by using only 4 steps and a CFG scale of 1.
+For example, to use a distilled Wan2.2-Lightning LoRA, use the following command. Lightning speeds up generation by using only 4 steps and a CFG scale of 1.
 
 ```bash
 python -m mlx_video.wan2.generate \
@@ -410,8 +433,8 @@ python -m mlx_video.wan2.generate \
     --guide-scale 1 \
     --trim-first-frames 1 \
     --seed 2391784614 \
-    --lora-high /Volumes/SSD/Wan-AI/lightx2v/Wan2.2-Lightning/Wan2.2-T2V-A14B-4steps-lora-rank64-Seko-V2.0/high_noise_model.safetensors 1 \
-    --lora-low /Volumes/SSD/Wan-AI/lightx2v/Wan2.2-Lightning/Wan2.2-T2V-A14B-4steps-lora-rank64-Seko-V2.0/low_noise_model.safetensors 1
+    --lora-high /path/to/Wan2.2-Lightning/high_noise_model.safetensors 1 \
+    --lora-low /path/to/Wan2.2-Lightning/low_noise_model.safetensors 1
  ```
 
 ## Enjoy
