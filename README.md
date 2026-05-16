@@ -131,6 +131,36 @@ python -m mlx_video.wan_2.generate \
 
 The pipeline auto-detects the model version from `config.json` and selects the right pipeline mode (single or dual model).
 
+With a config file:
+
+```yaml
+# wan-run.yaml
+model_dir: wan22_mlx
+prompt: "Ocean waves at sunset, cinematic, 4K"
+negative_prompt: "blurry, low quality"
+width: 1280
+height: 704
+num_frames: 81
+steps: 40
+guide_scale: "3.0,4.0"
+seed: 42
+output_path: my_video.mp4
+```
+
+```bash
+python -m mlx_video.wan_2.generate --config wan-run.yaml
+```
+
+JSON configs use the same keys. Repeat `--config` to run a batch sequentially; explicit CLI flags override values in every config:
+
+```bash
+python -m mlx_video.wan_2.generate \
+    --config first.yaml \
+    --config second.json \
+    --config third.yml \
+    --height 704
+```
+
 ### Image-to-Video (I2V-14B)
 
 ```bash
@@ -169,6 +199,7 @@ python -m mlx_video.wan_2.generate \
 
 | Option | Default | Description |
 |--------|---------|-------------|
+| `--config` | — | JSON/YAML run config; repeat for sequential batch generation |
 | `--model-dir` | (required) | Path to converted MLX model directory |
 | `--prompt` | (required) | Text description of the video |
 | `--image` | `None` | Input image path (for I2V models) |

@@ -2,6 +2,7 @@
 
 import argparse
 import gc
+import json
 import math
 import random
 import subprocess
@@ -46,6 +47,53 @@ class Colors:
 # Backward-compat alias (tests and external code may use the old name)
 _build_i2v_mask = build_i2v_mask
 
+CONFIG_KEYS = {
+    "model_dir",
+    "prompt",
+    "image",
+    "negative_prompt",
+    "no_negative_prompt",
+    "width",
+    "height",
+    "num_frames",
+    "steps",
+    "guide_scale",
+    "shift",
+    "seed",
+    "output_path",
+    "fps",
+    "output_last_frame",
+    "scheduler",
+    "noise_source",
+    "torch_python",
+    "lora",
+    "lora_high",
+    "lora_low",
+    "tiling",
+    "no_compile",
+    "trim_first_frames",
+    "debug_latents",
+    "iterations",
+    "iteration_seed",
+    "output_prefix",
+    "output_suffix",
+}
+
+CHOICES = {
+    "scheduler": {"euler", "dpm++", "unipc"},
+    "noise_source": {"mlx", "torch"},
+    "tiling": {
+        "auto",
+        "none",
+        "default",
+        "aggressive",
+        "conservative",
+        "spatial",
+        "temporal",
+    },
+    "iteration_seed": {"same", "increment", "random"},
+}
+
 
 def _crop_decoded_video(video: np.ndarray, num_frames: int) -> np.ndarray:
     """Return exactly the requested frame count, keeping the latest frames."""
@@ -88,6 +136,209 @@ def _iteration_output_path(
         f"-{width}x{height}{suffix_part}.mp4"
     )
     return Path(output_dir) / filename
+
+
+def _parser_defaults(parser: argparse.ArgumentParser) -> dict:
+    defaults = vars(parser.parse_args([]))
+    defaults.pop("config", None)
+    return defaults
+
+
+def _explicit_cli_dests(parser: argparse.ArgumentParser, argv: list[str]) -> set[str]:
+    option_to_dest = {}
+    for action in parser._actions:
+        for option in action.option_strings:
+            option_to_dest[option] = action.dest
+    explicit_dests = set()
+    for arg in argv:
+        option = arg.split("=", 1)[0]
+        dest = option_to_dest.get(option)
+        if dest not in {None, "config"}:
+            explicit_dests.add(dest)
+    return explicit_dests
+
+
+def _load_generation_config(path: str | Path) -> dict:
+    path = Path(path)
+    suffix = path.suffix.lower()
+    try:
+        if suffix == ".json":
+            with open(path) as f:
+                data = json.load(f)
+        elif suffix in {".yaml", ".yml"}:
+            import yaml
+
+            with open(path) as f:
+                data = yaml.safe_load(f)
+        else:
+            raise SystemExit(
+                f"Unsupported config extension for {path}: expected .json, .yaml, or .yml"
+            )
+    except OSError as exc:
+        raise SystemExit(f"{path}: could not read config: {exc}") from exc
+
+    if not isinstance(data, dict):
+        raise SystemExit(f"{path}: config must be a JSON/YAML object")
+
+    unknown = sorted(str(key) for key in data if key not in CONFIG_KEYS)
+    if unknown:
+        keys = ", ".join(unknown)
+        raise SystemExit(f"{path}: unknown config key(s): {keys}")
+
+    return data
+
+
+def _parse_guide_scale(value):
+    if value is None or isinstance(value, (int, float, tuple)):
+        return value
+    if isinstance(value, list):
+        if not value:
+            raise SystemExit("guide_scale must not be empty")
+        return tuple(float(x) for x in value) if len(value) > 1 else float(value[0])
+    parts = [float(x) for x in str(value).split(",")]
+    return tuple(parts) if len(parts) > 1 else parts[0]
+
+
+def _parse_lora_args(lora_list, name: str):
+    if not lora_list:
+        return None
+
+    parsed = []
+    for item in lora_list:
+        if not isinstance(item, (list, tuple)) or len(item) != 2:
+            raise SystemExit(f"{name} entries must be [path, strength] pairs")
+        path, strength = item
+        try:
+            parsed.append((path, float(strength)))
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(f"{name} strength must be a number") from exc
+    return parsed
+
+
+def _resolve_run_args(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+    config: dict | None,
+    explicit_dests: set[str],
+) -> argparse.Namespace:
+    values = _parser_defaults(parser)
+    if config:
+        values.update(config)
+
+    cli_values = vars(args)
+    for dest in explicit_dests:
+        values[dest] = cli_values[dest]
+
+    return argparse.Namespace(**values)
+
+
+def _validate_run_args(args: argparse.Namespace, source: str = "CLI") -> None:
+    if not args.model_dir:
+        raise SystemExit(f"{source}: --model-dir is required")
+    if not args.prompt:
+        raise SystemExit(f"{source}: --prompt is required")
+    if args.iterations < 1:
+        raise SystemExit(f"{source}: --iterations must be at least 1")
+
+    for key, choices in CHOICES.items():
+        value = getattr(args, key)
+        if value not in choices:
+            allowed = ", ".join(sorted(choices))
+            raise SystemExit(f"{source}: {key} must be one of: {allowed}")
+
+
+def _resolve_generation_runs(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+    explicit_dests: set[str],
+) -> list[argparse.Namespace]:
+    if not args.config:
+        run_args = _resolve_run_args(parser, args, None, explicit_dests)
+        _validate_run_args(run_args)
+        return [run_args]
+
+    runs = []
+    for config_path in args.config:
+        config = _load_generation_config(config_path)
+        run_args = _resolve_run_args(parser, args, config, explicit_dests)
+        _validate_run_args(run_args, str(config_path))
+        runs.append(run_args)
+    return runs
+
+
+def _run_generation_args(args: argparse.Namespace) -> None:
+    guide_scale = _parse_guide_scale(args.guide_scale)
+
+    neg_prompt = args.negative_prompt
+    if args.no_negative_prompt:
+        neg_prompt = ""
+
+    loras = _parse_lora_args(args.lora, "lora")
+    loras_high = _parse_lora_args(args.lora_high, "lora_high")
+    loras_low = _parse_lora_args(args.lora_low, "lora_low")
+    output_dir = Path(args.output_path)
+    if args.iterations > 1:
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+    wall_times = []
+    mode = "i2v" if args.image else "t2v"
+    random_base_seed = args.seed
+    if args.iteration_seed == "increment" and random_base_seed < 0:
+        random_base_seed = random.randint(0, 2**32 - 1)
+
+    for iteration in range(args.iterations):
+        seed = _iteration_seed(random_base_seed, iteration, args.iteration_seed)
+        output_path = (
+            args.output_path
+            if args.iterations == 1
+            else str(
+                _iteration_output_path(
+                    output_dir,
+                    prefix=args.output_prefix,
+                    suffix=args.output_suffix,
+                    mode=mode,
+                    seed=seed,
+                    steps=args.steps,
+                    shift=args.shift,
+                    width=args.width,
+                    height=args.height,
+                )
+            )
+        )
+        print(f"[{iteration + 1}/{args.iterations}] seed={seed} output={output_path}")
+        started = time.time()
+        generate_video(
+            model_dir=args.model_dir,
+            prompt=args.prompt,
+            negative_prompt=neg_prompt,
+            image=args.image,
+            width=args.width,
+            height=args.height,
+            num_frames=args.num_frames,
+            steps=args.steps,
+            guide_scale=guide_scale,
+            shift=args.shift,
+            seed=seed,
+            output_path=output_path,
+            fps=args.fps,
+            scheduler=args.scheduler,
+            noise_source=args.noise_source,
+            torch_python=args.torch_python,
+            loras=loras,
+            loras_high=loras_high,
+            loras_low=loras_low,
+            tiling=args.tiling,
+            no_compile=args.no_compile,
+            trim_first_frames=args.trim_first_frames,
+            debug_latents=args.debug_latents,
+            output_last_frame=args.output_last_frame,
+        )
+        elapsed = time.time() - started
+        wall_times.append(elapsed)
+        print(f"[{iteration + 1}/{args.iterations}] wall_time={elapsed:.3f}s")
+
+    if args.iterations > 1:
+        print(f"Average wall time: {sum(wall_times) / len(wall_times):.3f}s")
 
 
 def _torch_randn(shape: tuple[int, ...], seed: int, torch_python: str | None = None) -> mx.array:
@@ -205,8 +456,6 @@ def generate_video(
         output_last_frame: Save the final decoded frame as a sibling PNG. If
             None, defaults to True when num_frames is 1.
     """
-    import json
-
     from mlx_video.models.wan_2.config import WanModelConfig
     from mlx_video.models.wan_2.scheduler import (
         FlowDPMPP2MScheduler,
@@ -920,12 +1169,21 @@ def generate_video(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Wan Text-to-Video Generation (MLX)")
     parser.add_argument(
+        "--config",
+        action="append",
+        default=None,
+        help=(
+            "Path to a JSON or YAML generation config. Repeat to run multiple "
+            "configs sequentially; explicit CLI flags override config values."
+        ),
+    )
+    parser.add_argument(
         "--model-dir",
         type=str,
-        required=True,
+        default=None,
         help="Path to converted MLX model directory",
     )
-    parser.add_argument("--prompt", type=str, required=True, help="Text prompt")
+    parser.add_argument("--prompt", type=str, default=None, help="Text prompt")
     parser.add_argument(
         "--image",
         type=str,
@@ -1086,96 +1344,17 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main():
+def main(argv: list[str] | None = None):
     parser = build_parser()
-    args = parser.parse_args()
+    if argv is None:
+        import sys
 
-    # Parse guide scale
-    guide_scale = None
-    if args.guide_scale is not None:
-        parts = [float(x) for x in args.guide_scale.split(",")]
-        guide_scale = tuple(parts) if len(parts) > 1 else parts[0]
-
-    # Handle negative prompt: --no-negative-prompt forces empty, otherwise pass through
-    neg_prompt = args.negative_prompt
-    if args.no_negative_prompt:
-        neg_prompt = ""
-
-    # Parse LoRA configs: convert [path, strength_str] → (path, float)
-    def _parse_lora_args(lora_list):
-        if not lora_list:
-            return None
-        return [(path, float(strength)) for path, strength in lora_list]
-
-    if args.iterations < 1:
-        raise SystemExit("--iterations must be at least 1")
-
-    loras = _parse_lora_args(args.lora)
-    loras_high = _parse_lora_args(args.lora_high)
-    loras_low = _parse_lora_args(args.lora_low)
-    output_dir = Path(args.output_path)
-    if args.iterations > 1:
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-    wall_times = []
-    mode = "i2v" if args.image else "t2v"
-    random_base_seed = args.seed
-    if args.iteration_seed == "increment" and random_base_seed < 0:
-        random_base_seed = random.randint(0, 2**32 - 1)
-
-    for iteration in range(args.iterations):
-        seed = _iteration_seed(random_base_seed, iteration, args.iteration_seed)
-        output_path = (
-            args.output_path
-            if args.iterations == 1
-            else str(
-                _iteration_output_path(
-                    output_dir,
-                    prefix=args.output_prefix,
-                    suffix=args.output_suffix,
-                    mode=mode,
-                    seed=seed,
-                    steps=args.steps,
-                    shift=args.shift,
-                    width=args.width,
-                    height=args.height,
-                )
-            )
-        )
-        print(f"[{iteration + 1}/{args.iterations}] seed={seed} output={output_path}")
-        started = time.time()
-        generate_video(
-            model_dir=args.model_dir,
-            prompt=args.prompt,
-            negative_prompt=neg_prompt,
-            image=args.image,
-            width=args.width,
-            height=args.height,
-            num_frames=args.num_frames,
-            steps=args.steps,
-            guide_scale=guide_scale,
-            shift=args.shift,
-            seed=seed,
-            output_path=output_path,
-            fps=args.fps,
-            scheduler=args.scheduler,
-            noise_source=args.noise_source,
-            torch_python=args.torch_python,
-            loras=loras,
-            loras_high=loras_high,
-            loras_low=loras_low,
-            tiling=args.tiling,
-            no_compile=args.no_compile,
-            trim_first_frames=args.trim_first_frames,
-            debug_latents=args.debug_latents,
-            output_last_frame=args.output_last_frame,
-        )
-        elapsed = time.time() - started
-        wall_times.append(elapsed)
-        print(f"[{iteration + 1}/{args.iterations}] wall_time={elapsed:.3f}s")
-
-    if args.iterations > 1:
-        print(f"Average wall time: {sum(wall_times) / len(wall_times):.3f}s")
+        argv = sys.argv[1:]
+    args = parser.parse_args(argv)
+    explicit_dests = _explicit_cli_dests(parser, argv)
+    runs = _resolve_generation_runs(parser, args, explicit_dests)
+    for run_args in runs:
+        _run_generation_args(run_args)
 
 
 if __name__ == "__main__":

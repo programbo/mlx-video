@@ -25,6 +25,7 @@ dependencies = [
     "imageio>=2.37.2",
     "imageio-ffmpeg>=0.6.0",
     "ftfy",
+    "PyYAML>=6.0.2",
 ]
 license = {text="MIT"}
 authors = [
@@ -59,4 +60,3 @@ version = {attr = "mlx_video.version.__version__"}
 dev = [
     "pytest",
 ]
-
