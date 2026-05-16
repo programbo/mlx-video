@@ -240,6 +240,8 @@ num_frames: 81
 steps: 40
 guide_scale: "3.0,4.0"
 refiner_start: 0.125
+sigma_schedule: official
+euler_output: velocity
 seed: 42
 output_path: wan22_t2v.mp4
 ```
@@ -279,7 +281,7 @@ python -m mlx_video.wan_2.generate \
     --config third.yml
 ```
 
-Supported config keys are: `model_dir`, `prompt`, `image`, `negative_prompt`, `no_negative_prompt`, `width`, `height`, `num_frames`, `steps`, `guide_scale`, `shift`, `refiner_start`, `seed`, `output_path`, `fps`, `output_last_frame`, `scheduler`, `noise_source`, `torch_python`, `lora`, `lora_high`, `lora_low`, `tiling`, `no_compile`, `trim_first_frames`, `debug_latents`, `iterations`, `iteration_seed`, `output_prefix`, and `output_suffix`.
+Supported config keys are: `model_dir`, `prompt`, `image`, `negative_prompt`, `no_negative_prompt`, `width`, `height`, `num_frames`, `steps`, `guide_scale`, `shift`, `refiner_start`, `seed`, `output_path`, `fps`, `output_last_frame`, `scheduler`, `sigma_schedule`, `euler_output`, `noise_source`, `torch_python`, `lora`, `lora_high`, `lora_low`, `tiling`, `no_compile`, `trim_first_frames`, `debug_latents`, `iterations`, `iteration_seed`, `output_prefix`, and `output_suffix`.
 
 #### Generation Options
 
@@ -304,6 +306,8 @@ Supported config keys are: `model_dir`, `prompt`, `image`, `negative_prompt`, `n
 | `--iterations` | `1` | Run multiple generations; when greater than 1, `--output-path` is treated as an output directory |
 | `--iteration-seed` | `increment` | Seed strategy for iterations: `same`, `increment`, or `random` |
 | `--scheduler` | `unipc` | Solver: `euler`, `dpm++`, or `unipc` |
+| `--sigma-schedule` | `official` | Sigma schedule: `official` or `comfy-simple` |
+| `--euler-output` | `velocity` | Euler output interpretation: `velocity` or `denoised` |
 | `--noise-source` | `mlx` | Initial latent noise source: `mlx` or `torch`; use `torch` for PyTorch parity checks |
 | `--torch-python` | active Python | Python executable used to generate Torch noise for `--noise-source torch` |
 | `--trim-first-frames` | `0` | Drop N leading frames (fixes first-frame artifacts on 14B models) |

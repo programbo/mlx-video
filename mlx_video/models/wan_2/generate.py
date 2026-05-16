@@ -65,6 +65,8 @@ CONFIG_KEYS = {
     "fps",
     "output_last_frame",
     "scheduler",
+    "sigma_schedule",
+    "euler_output",
     "noise_source",
     "torch_python",
     "lora",
@@ -82,6 +84,8 @@ CONFIG_KEYS = {
 
 CHOICES = {
     "scheduler": {"euler", "dpm++", "unipc"},
+    "sigma_schedule": {"official", "comfy-simple"},
+    "euler_output": {"velocity", "denoised"},
     "noise_source": {"mlx", "torch"},
     "tiling": {
         "auto",
@@ -339,6 +343,8 @@ def _run_generation_args(args: argparse.Namespace) -> None:
             output_path=output_path,
             fps=args.fps,
             scheduler=args.scheduler,
+            sigma_schedule=args.sigma_schedule,
+            euler_output=args.euler_output,
             noise_source=args.noise_source,
             torch_python=args.torch_python,
             loras=loras,
@@ -425,6 +431,8 @@ def generate_video(
     output_path: str = "output.mp4",
     fps: int | None = None,
     scheduler: str = "unipc",
+    sigma_schedule: str = "official",
+    euler_output: str = "velocity",
     noise_source: str = "mlx",
     torch_python: str | None = None,
     loras: list | None = None,
@@ -456,6 +464,8 @@ def generate_video(
         output_path: Output video path
         fps: Output frames per second (None = use config default)
         scheduler: Solver type: 'euler', 'dpm++', or 'unipc' (default)
+        sigma_schedule: Sigma schedule: 'official' or 'comfy-simple'
+        euler_output: Euler model-output interpretation: 'velocity' or 'denoised'
         noise_source: Initial latent noise source: 'mlx' (default) or 'torch'
         torch_python: Optional Python executable used to generate Torch RNG noise
         loras: Optional list of (path, strength) tuples applied to all models
@@ -634,6 +644,9 @@ def generate_video(
     print(f"  Size: {width}x{height}, Frames: {num_frames}, FPS: {output_fps}")
     print(
         f"  Steps: {steps}, Guide: {guide_scale}, Shift: {shift}, Solver: {scheduler}"
+    )
+    print(
+        f"{Colors.DIM}  Sigma schedule: {sigma_schedule}, Euler output: {euler_output}{Colors.RESET}"
     )
     if resolved_refiner_start is not None:
         low_noise_steps = steps - high_noise_steps
@@ -909,8 +922,14 @@ def generate_video(
         "unipc": FlowUniPCScheduler,
     }
     sched_cls = _schedulers.get(scheduler, FlowUniPCScheduler)
-    sched = sched_cls(num_train_timesteps=config.num_train_timesteps)
-    sched.set_timesteps(steps, shift=shift)
+    if scheduler == "euler":
+        sched = sched_cls(
+            num_train_timesteps=config.num_train_timesteps,
+            euler_output=euler_output,
+        )
+    else:
+        sched = sched_cls(num_train_timesteps=config.num_train_timesteps)
+    sched.set_timesteps(steps, shift=shift, sigma_schedule=sigma_schedule)
 
     # Generate initial noise
     if noise_source == "mlx":
@@ -1300,6 +1319,20 @@ def build_parser() -> argparse.ArgumentParser:
         default="unipc",
         choices=["euler", "dpm++", "unipc"],
         help="Diffusion solver: euler (1st order), dpm++ (2nd order), unipc (2nd order PC, default/official)",
+    )
+    parser.add_argument(
+        "--sigma-schedule",
+        type=str,
+        default="official",
+        choices=["official", "comfy-simple"],
+        help="Sigma schedule: official Wan/MLX interpolation or ComfyUI ModelSamplingSD3 simple",
+    )
+    parser.add_argument(
+        "--euler-output",
+        type=str,
+        default="velocity",
+        choices=["velocity", "denoised"],
+        help="Euler model output interpretation for parity diagnostics",
     )
     parser.add_argument(
         "--noise-source",

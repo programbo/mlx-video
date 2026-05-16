@@ -94,6 +94,25 @@ class TestFlowMatchEulerScheduler:
             rtol=1e-4,
         )
 
+    def test_step_euler_denoised_output(self):
+        from mlx_video.models.wan_2.scheduler import FlowMatchEulerScheduler
+
+        sched = FlowMatchEulerScheduler(euler_output="denoised")
+        sched.set_timesteps(10, shift=1.0)
+        mx.eval(sched.sigmas)
+
+        sample = mx.ones((1, 1, 1, 1, 1))
+        denoised = mx.ones((1, 1, 1, 1, 1)) * 0.5
+        sigma = float(np.array(sched.sigmas[0]))
+        sigma_next = float(np.array(sched.sigmas[1]))
+
+        result = sched.step(denoised, sched.timesteps[0], sample)
+        mx.eval(result)
+
+        derivative = (1.0 - 0.5) / sigma
+        expected = 1.0 + (sigma_next - sigma) * derivative
+        np.testing.assert_allclose(np.array(result).flatten()[0], expected, rtol=1e-4)
+
     def test_step_index_increments(self):
         from mlx_video.models.wan_2.scheduler import FlowMatchEulerScheduler
 
@@ -198,6 +217,32 @@ class TestComputeSigmas:
         official = shift * official / (1.0 + (shift - 1.0) * official)
         official = np.append(official, 0.0).astype(np.float32)
         np.testing.assert_allclose(sigmas, official, atol=1e-6)
+
+    def test_comfy_simple_sigmas_match_x2v_parity_values(self):
+        from mlx_video.models.wan_2.scheduler import compute_sigma_schedule
+
+        sigmas = compute_sigma_schedule(8, shift=5.0, sigma_schedule="comfy-simple")
+        expected = np.array(
+            [
+                1.0,
+                0.972222222,
+                0.9375,
+                0.892857143,
+                0.833333333,
+                0.75,
+                0.625,
+                0.416666667,
+                0.0,
+            ],
+            dtype=np.float32,
+        )
+        np.testing.assert_allclose(sigmas, expected, atol=1e-6)
+
+    def test_rejects_unknown_sigma_schedule(self):
+        from mlx_video.models.wan_2.scheduler import compute_sigma_schedule
+
+        with pytest.raises(ValueError, match="Unsupported sigma schedule"):
+            compute_sigma_schedule(8, sigma_schedule="unknown")
 
     def test_shift_one_is_near_linear(self):
         from mlx_video.models.wan_2.scheduler import _compute_sigmas
