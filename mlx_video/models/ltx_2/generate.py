@@ -43,6 +43,8 @@ from mlx_video.utils import (
     get_model_path,
     load_image,
     prepare_image_for_encoding,
+    save_last_frame_png,
+    should_output_last_frame,
 )
 
 
@@ -1744,6 +1746,7 @@ def generate_video(
     audio_file: Optional[str] = None,
     audio_start_time: float = 0.0,
     spatial_upscaler: Optional[str] = None,
+    output_last_frame: Optional[bool] = None,
 ):
     """Generate video using LTX-2 models.
 
@@ -1768,6 +1771,8 @@ def generate_video(
         fps: Frames per second for output video
         output_path: Path to save the output video
         save_frames: Whether to save individual frames as images
+        output_last_frame: Save the final decoded frame as a sibling PNG. If
+            None, defaults to True when num_frames is 1.
         verbose: Whether to print progress
         enhance_prompt: Whether to enhance prompt using Gemma
         max_tokens: Max tokens for prompt enhancement
@@ -3093,6 +3098,15 @@ def generate_video(
     del vae_decoder
     mx.clear_cache()
 
+    if should_output_last_frame(output_last_frame, num_frames):
+        try:
+            png_path = save_last_frame_png(video_np, output_path)
+            console.print(f"[green]✅ Saved last frame to[/] {png_path}")
+        except OSError as exc:
+            console.print(
+                f"[yellow]⚠ Could not save last-frame PNG for {output_path}: {exc}[/]"
+            )
+
     if save_frames:
         frames_dir = output_path.parent / f"{output_path.stem}_frames"
         frames_dir.mkdir(exist_ok=True)
@@ -3200,6 +3214,15 @@ Examples:
     parser.add_argument("--fps", type=int, default=24, help="Frames per second")
     parser.add_argument(
         "--output-path", "-o", type=str, default="output.mp4", help="Output video path"
+    )
+    parser.add_argument(
+        "--output-last-frame",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Save the final decoded frame as a PNG beside the MP4 "
+            "(default: enabled when --num-frames is 1)"
+        ),
     )
     parser.add_argument(
         "--save-frames", action="store_true", help="Save individual frames as images"
@@ -3415,6 +3438,7 @@ Examples:
         audio_file=args.audio_file,
         audio_start_time=args.audio_start_time,
         spatial_upscaler=args.spatial_upscaler,
+        output_last_frame=args.output_last_frame,
     )
 
 

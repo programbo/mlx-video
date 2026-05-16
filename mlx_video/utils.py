@@ -10,6 +10,28 @@ from huggingface_hub import snapshot_download
 from PIL import Image
 
 
+def last_frame_output_path(output_path: Union[str, Path]) -> Path:
+    """Return the sibling PNG path for a video output path."""
+    return Path(output_path).with_suffix(".png")
+
+
+def should_output_last_frame(output_last_frame: Optional[bool], num_frames: int) -> bool:
+    """Resolve last-frame export defaults.
+
+    Single-frame runs save a sibling PNG by default; multi-frame runs only do so
+    when the user explicitly opts in.
+    """
+    return num_frames == 1 if output_last_frame is None else output_last_frame
+
+
+def save_last_frame_png(frames: np.ndarray, output_path: Union[str, Path]) -> Path:
+    """Save the final decoded RGB frame as a PNG beside the video output."""
+    png_path = last_frame_output_path(output_path)
+    png_path.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(frames[-1]).save(png_path, format="PNG")
+    return png_path
+
+
 def get_model_path(model_repo: str):
     """Get or download LTX-2 model path."""
     try:

@@ -20,6 +20,7 @@ from mlx_video.models.wan_2.utils import (
     load_wan_model,
 )
 from mlx_video.models.wan_2.postprocess import save_video
+from mlx_video.utils import save_last_frame_png, should_output_last_frame
 
 
 class Colors:
@@ -38,6 +39,13 @@ class Colors:
 
 # Backward-compat alias (tests and external code may use the old name)
 _build_i2v_mask = build_i2v_mask
+
+
+def _crop_decoded_video(video: np.ndarray, num_frames: int) -> np.ndarray:
+    """Return exactly the requested frame count, keeping the latest frames."""
+    if video.shape[0] <= num_frames:
+        return video
+    return video[-num_frames:]
 
 
 def _best_output_size(w, h, dw, dh, max_area):
@@ -86,6 +94,7 @@ def generate_video(
     no_compile: bool = False,
     trim_first_frames: int = 0,
     debug_latents: bool = False,
+    output_last_frame: bool | None = None,
 ):
     """Generate video using Wan pipeline (supports T2V and I2V).
 
@@ -120,6 +129,8 @@ def generate_video(
             discards first 4). Use 2 for more aggressive trimming. Default: 0.
         debug_latents: If True, print per-temporal-position latent statistics
             after denoising for diagnosing first-frame artifacts.
+        output_last_frame: Save the final decoded frame as a sibling PNG. If
+            None, defaults to True when num_frames is 1.
     """
     import json
 
@@ -806,6 +817,22 @@ def generate_video(
             f"{Colors.DIM}  Trimmed first {trim_pixels} frames ({video.shape[0]} remaining){Colors.RESET}"
         )
 
+    decoded_frames = video.shape[0]
+    video = _crop_decoded_video(video, num_frames)
+    if decoded_frames != video.shape[0]:
+        print(
+            f"{Colors.DIM}  Decoded frames: {decoded_frames}; output frames: {video.shape[0]}{Colors.RESET}"
+        )
+
+    if should_output_last_frame(output_last_frame, num_frames):
+        try:
+            png_path = save_last_frame_png(video, output_path)
+            print(f"{Colors.GREEN}✓ Last frame saved to {png_path}{Colors.RESET}")
+        except OSError as exc:
+            print(
+                f"{Colors.YELLOW}  Could not save last-frame PNG for {output_path}: {exc}{Colors.RESET}"
+            )
+
     save_video(video, output_path, fps=output_fps)
     print(f"\n{Colors.GREEN}✓ Video saved to {output_path}{Colors.RESET}")
     print(f"{Colors.DIM}  Total time: {time.time() - t1:.1f}s{Colors.RESET}")
@@ -872,6 +899,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--output-path", type=str, default="output.mp4", help="Output video path"
     )
     parser.add_argument("--fps", type=int, default=None, help="Output frames per second")
+    parser.add_argument(
+        "--output-last-frame",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Save the final decoded frame as a PNG beside the MP4 "
+            "(default: enabled when --num-frames is 1)"
+        ),
+    )
     parser.add_argument(
         "--scheduler",
         type=str,
@@ -980,6 +1016,7 @@ def main():
         no_compile=args.no_compile,
         trim_first_frames=args.trim_first_frames,
         debug_latents=args.debug_latents,
+        output_last_frame=args.output_last_frame,
     )
 
 
