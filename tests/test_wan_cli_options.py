@@ -238,6 +238,8 @@ def test_config_resolution_accepts_reference_bridge_options(tmp_path):
                 "model_dir": "model",
                 "prompt": "prompt",
                 "t2v_lightning_preset": True,
+                "text_encoder": "fp8-scaled",
+                "text_encoder_dir": "text_encoders",
                 "positive_conditioning_npz": "positive.npz",
                 "negative_conditioning_npz": "negative.npz",
                 "dump_text_conditioning_npz": "text.npz",
@@ -251,6 +253,8 @@ def test_config_resolution_accepts_reference_bridge_options(tmp_path):
     runs = _resolve_generation_runs(parser, args, set())
 
     assert runs[0].t2v_lightning_preset is True
+    assert runs[0].text_encoder == "fp8-scaled"
+    assert runs[0].text_encoder_dir == "text_encoders"
     assert runs[0].positive_conditioning_npz == "positive.npz"
     assert runs[0].negative_conditioning_npz == "negative.npz"
     assert runs[0].dump_text_conditioning_npz == "text.npz"
@@ -515,6 +519,63 @@ def test_wan_parser_accepts_noise_source_options():
 
     assert args.noise_source == "torch"
     assert args.torch_python == "/usr/bin/python3"
+
+
+def test_wan_parser_accepts_text_encoder_options():
+    from mlx_video.models.wan_2.generate import build_parser
+
+    args = build_parser().parse_args(
+        [
+            "--model-dir",
+            "model",
+            "--prompt",
+            "prompt",
+            "--text-encoder",
+            "fp8-scaled",
+            "--text-encoder-dir",
+            "text_encoders",
+        ]
+    )
+
+    assert args.text_encoder == "fp8-scaled"
+    assert args.text_encoder_dir == "text_encoders"
+
+
+def test_text_encoder_resolution_falls_back_when_fp8_missing(tmp_path):
+    from mlx_video.models.wan_2.generate import _resolve_text_encoder
+
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    backend, path, warning = _resolve_text_encoder(
+        "fp8-scaled", model_dir, str(tmp_path / "text_encoders")
+    )
+
+    assert backend == "mlx"
+    assert path == model_dir / "t5_encoder.safetensors"
+    assert "umt5_xxl_fp8_e4m3fn_scaled.safetensors" in warning
+    assert "Falling back to MLX text encoder" in warning
+
+
+def test_text_encoder_resolution_finds_fp8_scaled_file(tmp_path):
+    from mlx_video.models.wan_2.generate import (
+        FP8_SCALED_TEXT_ENCODER_FILENAME,
+        _resolve_text_encoder,
+    )
+
+    model_dir = tmp_path / "model"
+    encoder_dir = tmp_path / "text_encoders"
+    model_dir.mkdir()
+    encoder_dir.mkdir()
+    encoder_path = encoder_dir / FP8_SCALED_TEXT_ENCODER_FILENAME
+    encoder_path.write_bytes(b"fixture")
+
+    backend, path, warning = _resolve_text_encoder(
+        "fp8-scaled", model_dir, str(encoder_dir)
+    )
+
+    assert backend == "fp8-scaled"
+    assert path == encoder_path
+    assert warning is None
 
 
 def test_t2v_lightning_preset_sets_t2v_sampling_defaults():
