@@ -286,7 +286,7 @@ python -m mlx_video.wan_2.generate \
     --config third.yml
 ```
 
-Supported config keys are: `model_dir`, `prompt`, `image`, `negative_prompt`, `no_negative_prompt`, `width`, `height`, `num_frames`, `steps`, `guide_scale`, `shift`, `refiner_start`, `seed`, `output_path`, `fps`, `output_last_frame`, `scheduler`, `sigma_schedule`, `noise_source`, `torch_python`, `positive_conditioning_npz`, `negative_conditioning_npz`, `dump_text_conditioning_npz`, `dump_final_latents_npz`, `initial_latents_npz`, `lora`, `lora_high`, `lora_low`, `tiling`, `legacy_vae_decode`, `no_compile`, `trim_first_frames`, `debug_latents`, `iterations`, `iteration_seed`, `output_prefix`, and `output_suffix`.
+Supported config keys are: `model_dir`, `prompt`, `image`, `negative_prompt`, `no_negative_prompt`, `width`, `height`, `num_frames`, `steps`, `guide_scale`, `shift`, `refiner_start`, `seed`, `output_path`, `fps`, `output_last_frame`, `scheduler`, `sigma_schedule`, `noise_source`, `torch_python`, `positive_conditioning_npz`, `negative_conditioning_npz`, `dump_text_conditioning_npz`, `dump_final_latents_npz`, `initial_latents_npz`, `lora`, `lora_high`, `lora_low`, `tiling`, `legacy_vae_decode`, `no_compile`, `trim_first_frames`, `debug_latents`, `iterations`, `iteration_seed`, and `output_template`.
 
 #### Bridge Diagnostics
 
@@ -319,6 +319,7 @@ The NPZ bridge options are diagnostic tools for isolating where parity diverges:
 | `--output-last-frame` / `--no-output-last-frame` | auto | Save sibling PNG of the final frame; enabled by default for one-frame runs |
 | `--iterations` | `1` | Run multiple generations; when greater than 1, `--output-path` is treated as an output directory |
 | `--iteration-seed` | `increment` | Seed strategy for iterations: `same`, `increment`, or `random` |
+| `--output-template` | model default | Relative output filename template used under `--output-path` |
 | `--scheduler` | `unipc` | Solver: `euler`, `dpm++`, or `unipc` |
 | `--sigma-schedule` | `official` | Sigma schedule: `official` or `comfy-simple` |
 | `--noise-source` | `mlx` | Initial latent noise source: `mlx` or `torch`; use `torch` for PyTorch parity checks |
@@ -331,6 +332,43 @@ The NPZ bridge options are diagnostic tools for isolating where parity diverges:
 | `--trim-first-frames` | `0` | Drop N leading frames (fixes first-frame artifacts on 14B models) |
 | `--tiling` | `auto` | VAE tiling: `auto`, `none`, `spatial`, `temporal` |
 | `--legacy-vae-decode` | off | Use the old Wan2.1/14B single-frame VAE temporal upsample path instead of reference decoding |
+
+#### Output Filename Templates
+
+`--output-template` uses Python `str.format` fields and renders a relative path under `--output-path`. If the rendered filename has no extension, `.mp4` is appended. Nested directories are created automatically.
+
+```bash
+python -m mlx_video.wan_2.generate \
+    --model-dir ./Wan2.2-T2V-A14B-MLX \
+    --prompt "A silver train crossing a desert bridge" \
+    --iterations 3 \
+    --output-path output/runs \
+    --output-template "{mode}/seed{seed}/iter{iteration1:03d}-{size}"
+```
+
+The default Wan template is:
+
+```text
+wan-{mode}-seed{seed}-s{steps}-sh{shift}-{width}x{height}.mp4
+```
+
+| Field | Example | Description |
+|-------|---------|-------------|
+| `{model}` | `wan` | Model family |
+| `{mode}` | `t2v` | Generation mode: `t2v` or `i2v` |
+| `{seed}` | `4000000033` | Concrete seed for the iteration |
+| `{steps}` | `8` | Diffusion steps, compact-formatted |
+| `{shift}` | `5` | Noise shift, compact-formatted |
+| `{width}` | `1280` | Output width |
+| `{height}` | `704` | Output height |
+| `{frames}` | `81` | Output frame count |
+| `{fps}` | `16` | Output frames per second |
+| `{iteration}` | `0` | Zero-based iteration index |
+| `{iteration1}` | `1` | One-based iteration number; supports format specs like `{iteration1:03d}` |
+| `{size}` | `1280x704` | Width and height joined as `WIDTHxHEIGHT` |
+| `{mode_part}` | `t2v-` | Mode plus trailing dash, empty when unavailable |
+| `{steps_part}` | `s8` | Steps with `s` prefix |
+| `{shift_part}` | `sh5` | Shift with `sh` prefix, empty when unavailable |
 
 ### Quantization (Reduced Memory)
 

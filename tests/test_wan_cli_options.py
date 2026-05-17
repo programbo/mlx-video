@@ -41,6 +41,23 @@ def test_wan_parser_accepts_repeatable_config():
     assert args.config == ["first.yaml", "second.json", "third.yml"]
 
 
+def test_wan_parser_accepts_output_template():
+    from mlx_video.models.wan_2.generate import build_parser
+
+    args = build_parser().parse_args(
+        [
+            "--model-dir",
+            "model",
+            "--prompt",
+            "prompt",
+            "--output-template",
+            "{mode}/seed{seed}",
+        ]
+    )
+
+    assert args.output_template == "{mode}/seed{seed}"
+
+
 def test_wan_parser_allows_model_dir_and_prompt_from_config():
     from mlx_video.models.wan_2.generate import build_parser
 
@@ -297,6 +314,26 @@ def test_config_resolution_plans_multiple_runs_in_order(tmp_path):
     assert [run.height for run in runs] == [512, 512]
     assert runs[0].iterations == 2
     assert runs[1].iterations == 1
+
+
+def test_config_resolution_accepts_output_template(tmp_path):
+    from mlx_video.models.wan_2.generate import _resolve_generation_runs, build_parser
+
+    path = tmp_path / "run.json"
+    path.write_text(
+        json.dumps(
+            {
+                "model_dir": "model",
+                "prompt": "prompt",
+                "output_template": "{mode}/seed{seed}",
+            }
+        )
+    )
+    parser = build_parser()
+    args = parser.parse_args(["--config", str(path)])
+    runs = _resolve_generation_runs(parser, args, set())
+
+    assert runs[0].output_template == "{mode}/seed{seed}"
 
 
 def test_config_resolution_rejects_missing_model_dir(tmp_path):

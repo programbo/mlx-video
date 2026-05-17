@@ -24,7 +24,9 @@ from mlx_video.models.wan_2.utils import (
 )
 from mlx_video.models.wan_2.postprocess import save_video
 from mlx_video.utils import (
+    OutputTemplateError,
     format_output_value,
+    render_output_template,
     save_last_frame_png,
     should_output_last_frame,
 )
@@ -98,8 +100,7 @@ CONFIG_KEYS = {
     "debug_latents",
     "iterations",
     "iteration_seed",
-    "output_prefix",
-    "output_suffix",
+    "output_template",
 }
 
 CHOICES = {
@@ -142,24 +143,36 @@ def _iteration_seed(base_seed: int, iteration: int, strategy: str) -> int:
 def _iteration_output_path(
     output_dir: str | Path,
     *,
-    prefix: str,
-    suffix: str,
+    template: str,
     mode: str,
     seed: int,
     steps: int | None,
     shift: float | None,
     width: int,
     height: int,
+    frames: int,
+    fps: int,
+    iteration: int,
 ) -> Path:
-    """Build a deterministic Wan iteration output path."""
-    suffix_part = f"-{suffix}" if suffix else ""
-    filename = (
-        f"{prefix}wan-{mode}-seed{seed}"
-        f"-s{format_output_value(steps)}"
-        f"-sh{format_output_value(shift)}"
-        f"-{width}x{height}{suffix_part}.mp4"
-    )
-    return Path(output_dir) / filename
+    """Build a Wan output path from a filename template."""
+    fields = {
+        "model": "wan",
+        "mode": mode,
+        "seed": seed,
+        "steps": format_output_value(steps),
+        "shift": format_output_value(shift),
+        "width": width,
+        "height": height,
+        "frames": frames,
+        "fps": fps,
+        "iteration": iteration,
+        "iteration1": iteration + 1,
+        "size": f"{width}x{height}",
+        "mode_part": f"{mode}-" if mode else "",
+        "steps_part": f"s{format_output_value(steps)}",
+        "shift_part": f"sh{format_output_value(shift)}" if shift is not None else "",
+    }
+    return render_output_template(output_dir, template, fields)
 
 
 def _parser_defaults(parser: argparse.ArgumentParser) -> dict:
@@ -349,34 +362,44 @@ def _run_generation_args(args: argparse.Namespace) -> None:
     loras_high = _parse_lora_args(args.lora_high, "lora_high")
     loras_low = _parse_lora_args(args.lora_low, "lora_low")
     output_dir = Path(args.output_path)
-    if args.iterations > 1:
+    uses_output_template = args.output_template is not None
+    output_path_is_dir = output_dir.is_dir()
+    if args.iterations > 1 or uses_output_template:
         output_dir.mkdir(parents=True, exist_ok=True)
 
     wall_times = []
     mode = "i2v" if args.image else "t2v"
+    output_template = (
+        args.output_template
+        or "wan-{mode}-seed{seed}-s{steps}-sh{shift}-{width}x{height}.mp4"
+    )
     random_base_seed = args.seed
     if args.iteration_seed == "increment" and random_base_seed < 0:
         random_base_seed = random.randint(0, 2**32 - 1)
 
     for iteration in range(args.iterations):
         seed = _iteration_seed(random_base_seed, iteration, args.iteration_seed)
-        output_path = (
-            args.output_path
-            if args.iterations == 1
-            else str(
-                _iteration_output_path(
-                    output_dir,
-                    prefix=args.output_prefix,
-                    suffix=args.output_suffix,
-                    mode=mode,
-                    seed=seed,
-                    steps=args.steps,
-                    shift=args.shift,
-                    width=args.width,
-                    height=args.height,
+        if args.iterations == 1 and not uses_output_template and not output_path_is_dir:
+            output_path = args.output_path
+        else:
+            try:
+                output_path = str(
+                    _iteration_output_path(
+                        output_dir,
+                        template=output_template,
+                        mode=mode,
+                        seed=seed,
+                        steps=args.steps,
+                        shift=args.shift,
+                        width=args.width,
+                        height=args.height,
+                        frames=args.num_frames,
+                        fps=args.fps,
+                        iteration=iteration,
+                    )
                 )
-            )
-        )
+            except OutputTemplateError as exc:
+                raise SystemExit(f"output template error: {exc}") from exc
         print(f"[{iteration + 1}/{args.iterations}] seed={seed} output={output_path}")
         started = time.time()
         generate_video(
@@ -1708,14 +1731,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Seed strategy for subsequent iterations",
     )
     parser.add_argument(
-        "--output-prefix",
-        default="",
-        help="String prepended to generated iteration filenames",
-    )
-    parser.add_argument(
-        "--output-suffix",
-        default="",
-        help="String appended to generated iteration filenames before .mp4",
+        "--output-template",
+        default=None,
+        help="Relative output filename template used under --output-path",
     )
     return parser
 
