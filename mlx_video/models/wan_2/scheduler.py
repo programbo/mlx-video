@@ -67,13 +67,8 @@ def compute_sigma_schedule(
 class FlowMatchEulerScheduler:
     """1st-order Euler scheduler for flow matching diffusion."""
 
-    def __init__(
-        self,
-        num_train_timesteps: int = 1000,
-        euler_output: str = "velocity",
-    ):
+    def __init__(self, num_train_timesteps: int = 1000):
         self.num_train_timesteps = num_train_timesteps
-        self.euler_output = euler_output
         self.timesteps = None
         self.sigmas = None
 
@@ -101,18 +96,13 @@ class FlowMatchEulerScheduler:
         timestep,
         sample: mx.array,
     ) -> mx.array:
-        """Euler step with configurable model-output interpretation."""
+        """Euler step for flow velocity model output."""
         sigma_cur = self._sigmas_float[self._step_index]
         dt = (
             self._sigmas_float[self._step_index + 1]
             - sigma_cur
         )
-        if self.euler_output == "velocity":
-            derivative = model_output
-        elif self.euler_output == "denoised":
-            derivative = (sample - model_output) / sigma_cur
-        else:
-            raise ValueError(f"Unsupported Euler output interpretation: {self.euler_output}")
+        derivative = model_output
         x_next = sample + dt * derivative
         self._step_index += 1
         return x_next

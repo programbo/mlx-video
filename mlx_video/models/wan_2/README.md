@@ -241,9 +241,6 @@ steps: 40
 guide_scale: "3.0,4.0"
 refiner_start: 0.125
 sigma_schedule: official
-euler_output: velocity
-text_encoder: mlx
-text_encoder_dir: null
 legacy_vae_decode: false
 positive_conditioning_npz: null
 negative_conditioning_npz: null
@@ -289,32 +286,7 @@ python -m mlx_video.wan_2.generate \
     --config third.yml
 ```
 
-Supported config keys are: `model_dir`, `prompt`, `image`, `negative_prompt`, `no_negative_prompt`, `width`, `height`, `num_frames`, `steps`, `guide_scale`, `shift`, `refiner_start`, `seed`, `output_path`, `fps`, `output_last_frame`, `scheduler`, `sigma_schedule`, `euler_output`, `noise_source`, `torch_python`, `text_encoder`, `text_encoder_dir`, `positive_conditioning_npz`, `negative_conditioning_npz`, `dump_text_conditioning_npz`, `dump_final_latents_npz`, `initial_latents_npz`, `lora`, `lora_high`, `lora_low`, `tiling`, `legacy_vae_decode`, `no_compile`, `trim_first_frames`, `debug_latents`, `iterations`, `iteration_seed`, `output_prefix`, and `output_suffix`.
-
-#### Text Encoder
-
-The default text encoder is the converted MLX encoder stored in the model
-directory as `t5_encoder.safetensors`.
-
-To use scaled-fp8 UMT5 weights, place this file in a text encoder directory:
-
-```text
-umt5_xxl_fp8_e4m3fn_scaled.safetensors
-```
-
-Then pass the directory explicitly:
-
-```bash
-python -m mlx_video.wan_2.generate \
-    --model-dir ./Wan2.2-T2V-A14B-MLX \
-    --prompt "A cinematic close portrait, soft studio light" \
-    --text-encoder fp8-scaled \
-    --text-encoder-dir ./text_encoders
-```
-
-If `--text-encoder fp8-scaled` is selected and the file is not found, the run
-prints the searched paths and falls back to the model's MLX encoder. Every run
-prints the resolved text encoder and path in the startup configuration.
+Supported config keys are: `model_dir`, `prompt`, `image`, `negative_prompt`, `no_negative_prompt`, `width`, `height`, `num_frames`, `steps`, `guide_scale`, `shift`, `refiner_start`, `seed`, `output_path`, `fps`, `output_last_frame`, `scheduler`, `sigma_schedule`, `noise_source`, `torch_python`, `positive_conditioning_npz`, `negative_conditioning_npz`, `dump_text_conditioning_npz`, `dump_final_latents_npz`, `initial_latents_npz`, `lora`, `lora_high`, `lora_low`, `tiling`, `legacy_vae_decode`, `no_compile`, `trim_first_frames`, `debug_latents`, `iterations`, `iteration_seed`, `output_prefix`, and `output_suffix`.
 
 #### Bridge Diagnostics
 
@@ -349,11 +321,8 @@ The NPZ bridge options are diagnostic tools for isolating where parity diverges:
 | `--iteration-seed` | `increment` | Seed strategy for iterations: `same`, `increment`, or `random` |
 | `--scheduler` | `unipc` | Solver: `euler`, `dpm++`, or `unipc` |
 | `--sigma-schedule` | `official` | Sigma schedule: `official` or `comfy-simple` |
-| `--euler-output` | `velocity` | Euler output interpretation: `velocity` or `denoised` |
 | `--noise-source` | `mlx` | Initial latent noise source: `mlx` or `torch`; use `torch` for PyTorch parity checks |
 | `--torch-python` | active Python | Python executable used to generate Torch noise for `--noise-source torch` |
-| `--text-encoder` | `mlx` | Text encoder backend: `mlx` or `fp8-scaled` |
-| `--text-encoder-dir` | auto search | Directory containing `umt5_xxl_fp8_e4m3fn_scaled.safetensors` |
 | `--initial-latents-npz` | — | Load exact initial latents/noise from NPZ instead of RNG |
 | `--positive-conditioning-npz` | — | Load raw positive text conditioning from NPZ and bypass MLX T5 |
 | `--negative-conditioning-npz` | — | Load raw negative text conditioning when CFG is enabled |

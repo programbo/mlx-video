@@ -88,89 +88,6 @@ def load_t5_encoder(model_path: Path, config):
     return encoder
 
 
-def load_t5_encoder_fp8_scaled(model_path: Path, config):
-    """Load a Comfy-style scaled-fp8 UMT5 encoder into the MLX T5 module.
-
-    The supported file layout uses HuggingFace/Comfy key names such as
-    ``encoder.block.0.layer.0.SelfAttention.q.weight`` plus scalar
-    ``scale_weight`` tensors for float8 matrices.
-    """
-    from safetensors import safe_open
-
-    from mlx_video.models.wan_2.text_encoder import T5Encoder
-
-    encoder = T5Encoder(
-        vocab_size=config.t5_vocab_size,
-        dim=config.t5_dim,
-        dim_attn=config.t5_dim_attn,
-        dim_ffn=config.t5_dim_ffn,
-        num_heads=config.t5_num_heads,
-        num_layers=config.t5_num_layers,
-        num_buckets=config.t5_num_buckets,
-        shared_pos=False,
-    )
-
-    def _scaled_tensor(handle, key: str) -> mx.array:
-        tensor = handle.get_tensor(key)
-        if "float8" in str(tensor.dtype):
-            scale_key = key.removesuffix(".weight") + ".scale_weight"
-            if scale_key not in handle.keys():
-                raise ValueError(
-                    f"Scaled-fp8 text encoder is missing scale tensor: {scale_key}"
-                )
-            tensor = tensor.float() * handle.get_tensor(scale_key).float()
-        else:
-            tensor = tensor.float()
-        return mx.array(tensor.cpu().numpy()).astype(mx.float32)
-
-    weights = {
-        "token_embedding.weight": None,
-        "norm.weight": None,
-    }
-    with safe_open(str(model_path), framework="pt", device="cpu") as handle:
-        weights["token_embedding.weight"] = _scaled_tensor(handle, "shared.weight")
-        weights["norm.weight"] = _scaled_tensor(
-            handle, "encoder.final_layer_norm.weight"
-        )
-        for layer in range(config.t5_num_layers):
-            prefix = f"encoder.block.{layer}"
-            target = f"blocks.{layer}"
-            weights[f"{target}.norm1.weight"] = _scaled_tensor(
-                handle, f"{prefix}.layer.0.layer_norm.weight"
-            )
-            weights[f"{target}.attn.q.weight"] = _scaled_tensor(
-                handle, f"{prefix}.layer.0.SelfAttention.q.weight"
-            )
-            weights[f"{target}.attn.k.weight"] = _scaled_tensor(
-                handle, f"{prefix}.layer.0.SelfAttention.k.weight"
-            )
-            weights[f"{target}.attn.v.weight"] = _scaled_tensor(
-                handle, f"{prefix}.layer.0.SelfAttention.v.weight"
-            )
-            weights[f"{target}.attn.o.weight"] = _scaled_tensor(
-                handle, f"{prefix}.layer.0.SelfAttention.o.weight"
-            )
-            weights[f"{target}.pos_embedding.embedding.weight"] = _scaled_tensor(
-                handle, f"{prefix}.layer.0.SelfAttention.relative_attention_bias.weight"
-            )
-            weights[f"{target}.norm2.weight"] = _scaled_tensor(
-                handle, f"{prefix}.layer.1.layer_norm.weight"
-            )
-            weights[f"{target}.ffn.gate_proj.weight"] = _scaled_tensor(
-                handle, f"{prefix}.layer.1.DenseReluDense.wi_0.weight"
-            )
-            weights[f"{target}.ffn.fc1.weight"] = _scaled_tensor(
-                handle, f"{prefix}.layer.1.DenseReluDense.wi_1.weight"
-            )
-            weights[f"{target}.ffn.fc2.weight"] = _scaled_tensor(
-                handle, f"{prefix}.layer.1.DenseReluDense.wo.weight"
-            )
-
-    encoder.load_weights(list(weights.items()))
-    mx.eval(encoder.parameters())
-    return encoder
-
-
 def load_vae_decoder(model_path: Path, config=None):
     """Load VAE decoder (skips encoder weights with strict=False).
 
@@ -252,7 +169,6 @@ def encode_text(
         tokenizer: HuggingFace tokenizer
         prompt: Text prompt
         text_len: Maximum text length
-
     Returns:
         Text embeddings [L, dim]
     """
@@ -268,7 +184,5 @@ def encode_text(
     mask = mx.array(tokens["attention_mask"])
 
     embeddings = encoder(ids, mask=mask)
-
-    # Return only non-padding tokens
     seq_len = int(mask.sum().item())
     return embeddings[0, :seq_len]
