@@ -219,6 +219,29 @@ class TestComputeSigmas:
         )
         np.testing.assert_allclose(sigmas, expected, atol=1e-6)
 
+    def test_comfy_simple_timesteps_keep_fractional_flow_values(self):
+        from mlx_video.models.wan_2.scheduler import FlowMatchEulerScheduler
+
+        sched = FlowMatchEulerScheduler()
+        sched.set_timesteps(8, shift=5.0, sigma_schedule="comfy-simple")
+        mx.eval(sched.timesteps)
+        expected = np.array(
+            [
+                1000.0,
+                972.222222,
+                937.5,
+                892.857143,
+                833.333333,
+                750.0,
+                625.0,
+                416.666667,
+            ],
+            dtype=np.float32,
+        )
+        np.testing.assert_allclose(
+            np.array(sched.timesteps), expected, rtol=1e-6, atol=1e-4
+        )
+
     def test_rejects_unknown_sigma_schedule(self):
         from mlx_video.models.wan_2.scheduler import compute_sigma_schedule
 
