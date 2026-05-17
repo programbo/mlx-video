@@ -82,9 +82,11 @@ class FlowMatchEulerScheduler:
             num_steps, shift, self.num_train_timesteps, sigma_schedule
         )
         self.sigmas = mx.array(sigmas)
-        # Integer timesteps to match reference (model trained with int timesteps)
+        # Flow matching samplers pass continuous sigma-derived timesteps to the
+        # model.  ComfyUI's ModelSamplingDiscreteFlow.timestep() is exactly
+        # sigma * multiplier, without flooring to integer indices.
         self.timesteps = mx.array(
-            (sigmas[:-1] * self.num_train_timesteps).astype(np.int64).astype(np.float32)
+            (sigmas[:-1] * self.num_train_timesteps).astype(np.float32)
         )
         # Store as Python floats to avoid .item() sync in step()
         self._sigmas_float = sigmas.tolist()
@@ -140,7 +142,7 @@ class FlowDPMPP2MScheduler:
         )
         self.sigmas = mx.array(sigmas)
         self.timesteps = mx.array(
-            (sigmas[:-1] * self.num_train_timesteps).astype(np.int64).astype(np.float32)
+            (sigmas[:-1] * self.num_train_timesteps).astype(np.float32)
         )
         # Store sigmas as Python floats for scalar math
         self._sigmas_float = sigmas.tolist()
@@ -269,7 +271,7 @@ class FlowUniPCScheduler:
         )
         self.sigmas = mx.array(sigmas)
         self.timesteps = mx.array(
-            (sigmas[:-1] * self.num_train_timesteps).astype(np.int64).astype(np.float32)
+            (sigmas[:-1] * self.num_train_timesteps).astype(np.float32)
         )
         self._sigmas_float = sigmas.tolist()
         self._step_index = 0
