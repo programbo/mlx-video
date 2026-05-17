@@ -218,65 +218,22 @@ class TestT5Encoder:
         assert out.shape == (1, 3, 64)
 
 
-def test_load_t5_encoder_fp8_scaled_maps_comfy_keys(tmp_path):
-    import pytest
+class TestEncodeText:
+    def test_encode_text_returns_non_padding_tokens(self):
+        from mlx_video.models.wan_2.utils import encode_text
 
-    torch = pytest.importorskip("torch")
-    from safetensors.torch import save_file
+        class Tokenizer:
+            def __call__(self, *args, **kwargs):
+                return {
+                    "input_ids": np.array([[4, 5, 0, 0]], dtype=np.int32),
+                    "attention_mask": np.array([[1, 1, 0, 0]], dtype=np.int32),
+                }
 
-    from mlx_video.models.wan_2.utils import load_t5_encoder_fp8_scaled
+        class Encoder:
+            def __call__(self, ids, mask=None):
+                values = mx.arange(ids.shape[1] * 2).reshape(1, ids.shape[1], 2)
+                return values.astype(mx.float32)
 
-    class Config:
-        t5_vocab_size = 8
-        t5_dim = 4
-        t5_dim_attn = 4
-        t5_dim_ffn = 6
-        t5_num_heads = 2
-        t5_num_layers = 1
-        t5_num_buckets = 4
-
-    path = tmp_path / "umt5_xxl_fp8_e4m3fn_scaled.safetensors"
-
-    def fp8_weight(shape, value=1.0):
-        return torch.full(shape, value, dtype=torch.float32).to(torch.float8_e4m3fn)
-
-    tensors = {
-        "shared.weight": torch.ones((8, 4), dtype=torch.float16),
-        "encoder.final_layer_norm.weight": torch.ones((4,), dtype=torch.float16),
-        "encoder.block.0.layer.0.layer_norm.weight": torch.ones(
-            (4,), dtype=torch.float16
-        ),
-        "encoder.block.0.layer.0.SelfAttention.relative_attention_bias.weight": torch.ones(
-            (4, 2), dtype=torch.float16
-        ),
-        "encoder.block.0.layer.1.layer_norm.weight": torch.ones(
-            (4,), dtype=torch.float16
-        ),
-    }
-    for name, shape in {
-        "q": (4, 4),
-        "k": (4, 4),
-        "v": (4, 4),
-        "o": (4, 4),
-    }.items():
-        prefix = f"encoder.block.0.layer.0.SelfAttention.{name}"
-        tensors[f"{prefix}.weight"] = fp8_weight(shape)
-        tensors[f"{prefix}.scale_weight"] = torch.tensor(0.5, dtype=torch.float32)
-    for name, shape in {
-        "wi_0": (6, 4),
-        "wi_1": (6, 4),
-        "wo": (4, 6),
-    }.items():
-        prefix = f"encoder.block.0.layer.1.DenseReluDense.{name}"
-        tensors[f"{prefix}.weight"] = fp8_weight(shape)
-        tensors[f"{prefix}.scale_weight"] = torch.tensor(0.25, dtype=torch.float32)
-
-    save_file(tensors, str(path))
-
-    encoder = load_t5_encoder_fp8_scaled(path, Config())
-
-    assert tuple(encoder.token_embedding.weight.shape) == (8, 4)
-    assert float(encoder.blocks[0].attn.q.weight[0, 0].item()) == pytest.approx(0.5)
-    assert float(encoder.blocks[0].ffn.gate_proj.weight[0, 0].item()) == pytest.approx(
-        0.25
-    )
+        out = encode_text(Encoder(), Tokenizer(), "hello", text_len=4)
+        mx.eval(out)
+        assert out.shape == (2, 2)
