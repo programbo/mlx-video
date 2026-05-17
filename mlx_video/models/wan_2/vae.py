@@ -676,9 +676,9 @@ class WanVAE(nn.Module):
 
         Args:
             z: Normalized latent [B, z_dim, T, H, W]
-            decode_mode: "reference" skips first-chunk temporal upsample to
-                match Wan2.1 reference decoding; "legacy" preserves the old
-                mlx-video single-frame temporal upsample behavior.
+            decode_mode: "reference" uses the cached/chunked reference decoder
+                path even for a single latent frame. "legacy" preserves the old
+                mlx-video non-cached single-frame temporal upsample behavior.
 
         Returns:
             Video [B, 3, T_out, H_out, W_out] clamped to [-1, 1]
@@ -695,11 +695,14 @@ class WanVAE(nn.Module):
             feat_cache = [None] * self._count_decoder_cache_slots()
 
         x = self.conv2(z)
-        if feat_cache is None:
+        if decode_mode == "legacy" and feat_cache is None:
             out = self.decoder(
-                x, legacy_temporal_upsample=(decode_mode == "legacy")
+                x, legacy_temporal_upsample=True
             )
             return mx.clip(out, -1, 1)
+
+        if feat_cache is None:
+            feat_cache = [None] * self._count_decoder_cache_slots()
 
         out_chunks = []
         for i in range(iter_count):
