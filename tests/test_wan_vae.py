@@ -123,6 +123,20 @@ class TestWanVAE:
         assert len(VAE_STD) == 16
         assert all(s > 0 for s in VAE_STD)
 
+    def test_single_frame_reference_decode_uses_cached_path(self):
+        """Reference decode should not use the old temporal-upsample shortcut."""
+        from mlx_video.models.wan_2.vae import WanVAE
+
+        vae = WanVAE(z_dim=16)
+        z = mx.random.normal((1, 16, 1, 2, 2))
+
+        reference = vae.decode(z, decode_mode="reference")
+        legacy = vae.decode(z, decode_mode="legacy")
+        mx.eval(reference, legacy)
+
+        assert reference.shape[2] == 1
+        assert legacy.shape[2] == 4
+
 
 # ---------------------------------------------------------------------------
 # Wan2.2 VAE Component Tests
