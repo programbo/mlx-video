@@ -1,4 +1,5 @@
 import math
+import string
 from functools import partial
 from pathlib import Path
 from typing import Optional, Union
@@ -39,6 +40,53 @@ def format_output_value(value) -> str:
     if isinstance(value, float) and value.is_integer():
         return str(int(value))
     return str(value).replace(".", "p")
+
+
+class OutputTemplateError(ValueError):
+    """Raised when an output filename template cannot be rendered safely."""
+
+
+def render_output_template(
+    output_dir: Union[str, Path],
+    template: str,
+    fields: dict,
+) -> Path:
+    """Render a relative output template under an output directory."""
+    formatter = string.Formatter()
+    try:
+        field_names = {
+            field_name.split(".", 1)[0].split("[", 1)[0]
+            for _, field_name, _, _ in formatter.parse(template)
+            if field_name
+        }
+    except ValueError as exc:
+        raise OutputTemplateError(f"invalid output template: {exc}") from exc
+    unknown = sorted(field_names - fields.keys())
+    if unknown:
+        raise OutputTemplateError(
+            f"unknown output template field(s): {', '.join(unknown)}"
+        )
+
+    try:
+        rendered = template.format(**fields)
+    except (KeyError, AttributeError, IndexError) as exc:
+        raise OutputTemplateError(f"invalid output template field: {exc}") from exc
+    except ValueError as exc:
+        raise OutputTemplateError(f"invalid output template: {exc}") from exc
+
+    relative = Path(rendered)
+    if relative.is_absolute():
+        raise OutputTemplateError("output template must render a relative path")
+    if any(part == ".." for part in relative.parts):
+        raise OutputTemplateError("output template must not contain '..' path segments")
+    if not relative.name:
+        raise OutputTemplateError("output template must render a filename")
+    if relative.suffix == "":
+        relative = relative.with_suffix(".mp4")
+
+    path = Path(output_dir) / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def get_model_path(model_repo: str):
