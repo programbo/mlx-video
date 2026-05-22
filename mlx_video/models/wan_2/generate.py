@@ -1,6 +1,7 @@
 """Wan2.2 Text-to-Video generation pipeline for MLX."""
 
 import argparse
+import copy
 import gc
 import json
 import math
@@ -93,6 +94,9 @@ CONFIG_KEYS = {
     "lora",
     "lora_high",
     "lora_low",
+    "no_lora",
+    "no_lora_high",
+    "no_lora_low",
     "tiling",
     "legacy_vae_decode",
     "no_compile",
@@ -102,6 +106,8 @@ CONFIG_KEYS = {
     "iteration_seed",
     "output_template",
 }
+
+REPO_CONFIG_DIR = Path(__file__).resolve().parents[3] / "configs"
 
 CHOICES = {
     "scheduler": {"euler", "dpm++", "unipc"},
@@ -153,6 +159,8 @@ def _iteration_output_path(
     frames: int,
     fps: int,
     iteration: int,
+    prompt_index: int = 0,
+    prompt_count: int = 1,
 ) -> Path:
     """Build a Wan output path from a filename template."""
     fields = {
@@ -167,6 +175,9 @@ def _iteration_output_path(
         "fps": fps,
         "iteration": iteration,
         "iteration1": iteration + 1,
+        "prompt_index": prompt_index,
+        "prompt_index1": prompt_index + 1,
+        "prompt_count": prompt_count,
         "size": f"{width}x{height}",
         "mode_part": f"{mode}-" if mode else "",
         "steps_part": f"s{format_output_value(steps)}",
@@ -223,6 +234,31 @@ def _load_generation_config(path: str | Path) -> dict:
         raise SystemExit(f"{path}: unknown config key(s): {keys}")
 
     return data
+
+
+def _resolve_generation_config_path(path: str | Path) -> Path:
+    raw_path = Path(path)
+    if raw_path.is_absolute():
+        return raw_path
+
+    path_text = str(path)
+    if raw_path.parent != Path(".") or path_text.startswith(("./", "../")):
+        return raw_path
+
+    return REPO_CONFIG_DIR / raw_path
+
+
+def _load_generation_config_with_defaults(path: str | Path) -> tuple[dict, set[str]]:
+    path = _resolve_generation_config_path(path)
+    config = _load_generation_config(path)
+    user_keys = set(config.keys())
+
+    default_path = path.with_name("_default.yaml")
+    if path.name != "_default.yaml" and default_path.exists():
+        defaults = _load_generation_config(default_path)
+        return defaults | config, user_keys
+
+    return config, user_keys
 
 
 def _parse_guide_scale(value):
@@ -300,12 +336,15 @@ def _resolve_run_args(
     args: argparse.Namespace,
     config: dict | None,
     explicit_dests: set[str],
+    config_user_keys: set[str] | None = None,
 ) -> argparse.Namespace:
     values = _parser_defaults(parser)
     user_keys = set()
     if config:
         values.update(config)
-        user_keys.update(config.keys())
+        user_keys.update(
+            config_user_keys if config_user_keys is not None else config.keys()
+        )
 
     cli_values = vars(args)
     for dest in explicit_dests:
@@ -314,7 +353,40 @@ def _resolve_run_args(
 
     apply_t2v_lightning_defaults(values, user_keys)
 
+    if values.get("no_lora"):
+        values["lora"] = []
+    if values.get("no_lora_high"):
+        values["lora_high"] = []
+    if values.get("no_lora_low"):
+        values["lora_low"] = []
+
     return argparse.Namespace(**values)
+
+
+def _expand_prompt_runs(
+    run_args: argparse.Namespace, source: str = "CLI"
+) -> list[argparse.Namespace]:
+    prompt = run_args.prompt
+    if prompt is None:
+        raise SystemExit(f"{source}: --prompt is required")
+    if isinstance(prompt, str):
+        prompts = [prompt]
+    elif isinstance(prompt, list) and all(isinstance(item, str) for item in prompt):
+        prompts = prompt
+    else:
+        raise SystemExit(f"{source}: --prompt must be a string or list of strings")
+
+    if not prompts or any(not item for item in prompts):
+        raise SystemExit(f"{source}: --prompt is required")
+
+    runs = []
+    for prompt_index, prompt_text in enumerate(prompts):
+        prompt_run = copy.copy(run_args)
+        prompt_run.prompt = prompt_text
+        prompt_run.prompt_index = prompt_index
+        prompt_run.prompt_count = len(prompts)
+        runs.append(prompt_run)
+    return runs
 
 
 def _validate_run_args(args: argparse.Namespace, source: str = "CLI") -> None:
@@ -339,15 +411,21 @@ def _resolve_generation_runs(
 ) -> list[argparse.Namespace]:
     if not args.config:
         run_args = _resolve_run_args(parser, args, None, explicit_dests)
-        _validate_run_args(run_args)
-        return [run_args]
+        runs = _expand_prompt_runs(run_args)
+        for run in runs:
+            _validate_run_args(run)
+        return runs
 
     runs = []
     for config_path in args.config:
-        config = _load_generation_config(config_path)
-        run_args = _resolve_run_args(parser, args, config, explicit_dests)
-        _validate_run_args(run_args, str(config_path))
-        runs.append(run_args)
+        config, config_user_keys = _load_generation_config_with_defaults(config_path)
+        run_args = _resolve_run_args(
+            parser, args, config, explicit_dests, config_user_keys
+        )
+        prompt_runs = _expand_prompt_runs(run_args, str(config_path))
+        for prompt_run in prompt_runs:
+            _validate_run_args(prompt_run, str(config_path))
+        runs.extend(prompt_runs)
     return runs
 
 
@@ -362,17 +440,24 @@ def _run_generation_args(args: argparse.Namespace) -> None:
     loras_high = _parse_lora_args(args.lora_high, "lora_high")
     loras_low = _parse_lora_args(args.lora_low, "lora_low")
     output_dir = Path(args.output_path)
-    uses_output_template = args.output_template is not None
+    prompt_count = getattr(args, "prompt_count", 1)
+    prompt_index = getattr(args, "prompt_index", 0)
+    uses_output_template = args.output_template is not None or prompt_count > 1
     output_path_is_dir = output_dir.is_dir()
     if args.iterations > 1 or uses_output_template:
         output_dir.mkdir(parents=True, exist_ok=True)
 
     wall_times = []
     mode = "i2v" if args.image else "t2v"
-    output_template = (
-        args.output_template
-        or "wan-{mode}-seed{seed}-s{steps}-sh{shift}-{width}x{height}.mp4"
-    )
+    if args.output_template:
+        output_template = args.output_template
+    elif prompt_count > 1:
+        output_template = (
+            "wan-{mode}-prompt{prompt_index1}-seed{seed}-s{steps}-sh{shift}-"
+            "{width}x{height}.mp4"
+        )
+    else:
+        output_template = "wan-{mode}-seed{seed}-s{steps}-sh{shift}-{width}x{height}.mp4"
     random_base_seed = args.seed
     if args.iteration_seed == "increment" and random_base_seed < 0:
         random_base_seed = random.randint(0, 2**32 - 1)
@@ -396,6 +481,8 @@ def _run_generation_args(args: argparse.Namespace) -> None:
                         frames=args.num_frames,
                         fps=args.fps,
                         iteration=iteration,
+                        prompt_index=prompt_index,
+                        prompt_count=prompt_count,
                     )
                 )
             except OutputTemplateError as exc:
@@ -1516,7 +1603,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Path to converted MLX model directory",
     )
-    parser.add_argument("--prompt", type=str, default=None, help="Text prompt")
+    parser.add_argument(
+        "--prompt",
+        type=str,
+        action="append",
+        default=None,
+        help="Text prompt. Repeat to generate once per prompt.",
+    )
     parser.add_argument(
         "--image",
         type=str,
@@ -1668,6 +1761,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Apply a LoRA to all models (repeatable). Format: --lora path.safetensors 0.8",
     )
     parser.add_argument(
+        "--no-lora",
+        action="store_true",
+        help="Clear generic LoRAs inherited from config",
+    )
+    parser.add_argument(
         "--lora-high",
         nargs=2,
         action="append",
@@ -1675,11 +1773,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Apply a LoRA to high-noise model only (dual-model, repeatable)",
     )
     parser.add_argument(
+        "--no-lora-high",
+        action="store_true",
+        help="Clear high-noise LoRAs inherited from config",
+    )
+    parser.add_argument(
         "--lora-low",
         nargs=2,
         action="append",
         metavar=("PATH", "STRENGTH"),
         help="Apply a LoRA to low-noise model only (dual-model, repeatable)",
+    )
+    parser.add_argument(
+        "--no-lora-low",
+        action="store_true",
+        help="Clear low-noise LoRAs inherited from config",
     )
     parser.add_argument(
         "--tiling",

@@ -137,7 +137,9 @@ With a config file:
 ```yaml
 # wan-run.yaml
 model_dir: wan22_mlx
-prompt: "Ocean waves at sunset, cinematic, 4K"
+prompt:
+  - "Ocean waves at sunset, cinematic, 4K"
+  - "A lighthouse during a storm, cinematic, 4K"
 negative_prompt: "blurry, low quality"
 width: 1280
 height: 704
@@ -145,14 +147,14 @@ num_frames: 81
 steps: 40
 guide_scale: "3.0,4.0"
 seed: 42
-output_path: my_video.mp4
+output_path: output/wan-run
 ```
 
 ```bash
 python -m mlx_video.wan_2.generate --config wan-run.yaml
 ```
 
-JSON configs use the same keys. Repeat `--config` to run a batch sequentially; explicit CLI flags override values in every config:
+JSON configs use the same keys. `prompt` may be a string or a list of strings; list values generate one output per prompt. Bare config names such as `alt.yaml` are resolved from the repo `configs/` directory; explicit paths such as `./alt.yaml`, `configs/alt.yaml`, `../alt.yaml`, and absolute paths are used as written. When a config has a sibling `_default.yaml`, missing fields are filled from that file. Values in the requested config override `_default.yaml`, and explicit CLI flags override both. Repeat `--config` to run a batch sequentially:
 
 ```bash
 python -m mlx_video.wan_2.generate \
@@ -176,6 +178,9 @@ python -m mlx_video.wan_2.generate \
 ### LoRA Support
 
 LoRAs can be used with the `--lora-high` and `--lora-low` command line switches.
+Use `--no-lora`, `--no-lora-high`, or `--no-lora-low` to clear LoRAs inherited
+from a config file. In config files, use `lora: []`, `lora_high: []`, or
+`lora_low: []` to clear inherited defaults.
 
 For example, using a distilled Wan2.2-Lightning LoRA for 4-step generation:
 
@@ -202,7 +207,7 @@ python -m mlx_video.wan_2.generate \
 |--------|---------|-------------|
 | `--config` | — | JSON/YAML run config; repeat for sequential batch generation |
 | `--model-dir` | (required) | Path to converted MLX model directory |
-| `--prompt` | (required) | Text description of the video |
+| `--prompt` | (required) | Text description of the video; repeat to generate one output per prompt |
 | `--image` | `None` | Input image path (for I2V models) |
 | `--negative-prompt` | `""` | Negative prompt for guidance |
 | `--width` | 1280 | Video width |

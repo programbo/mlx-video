@@ -1,0 +1,15 @@
+lora_high:
+  - ["/Volumes/Jove/Models/loras/WAN2.2/T2V/Deepthroat HIGH.safetensors", 1.0]
+  # - ["/Volumes/Jove/Models/loras/WAN2.2/T2V/Lightning 4Steps A14B FP16 HIGH.safetensors", 1.0]
+lora_low:
+  - ["/Volumes/Jove/Models/loras/WAN2.2/T2V/Deepthroat LOW.safetensors", 1.0]
+  # - ["/Volumes/Jove/Models/loras/WAN2.2/T2V/Lightning 4Steps A14B FP16 LOW.safetensors", 1.0]
+
+prompt:
+  - "blowjob, deepthroat, a video of a woman with long wavy blonde hair gathered into high ponytail, some loose strands framing face and cascading over shoulders, man's hand firmly grasping her ponytail tightly at the top of her head, guiding her head with his hand, performing a deepthroat blowjob on a standing man's big and long erect penis with testicles positioned in the genital area, he is naked. The woman sits still, her head position fixed, while the man holds her ponytail tightly, guiding her head, and thrusts his hips forward and back rapidly, pushing his erect penis deep into her mouth and throat with fast rapid motions, fast rhythmic thrusting in and out of her mouth. Wearing black thin-strapped bralette with MUSE text in white, crop top, prominent cleavage, smooth skin, fair skin, eyes closed or cast downwards, serene contemplative submissive expression, man's muscular arm and hand visible in upper right, man wearing white t-shirt, close-up intimate portrait, medium close-up, portrait orientation, woman in profile from chest up, slightly from above looking down, frame focused on man's genital area and woman's face, the face of the man is not visible, indoor setting, living room bedroom, softly blurred background, warm ambient lighting, shallow depth of field, sensual intimate atmosphere, soft warm lighting, masterpiece, best quality, highly detailed."
+
+negative_prompt: "The tones are vibrant, overexposed, static, details are unclear, subtitles, style, work, painting, image, still, overall grayish, worst quality, low quality, JPEG compression artifacts, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, distorted limbs, merged fingers, motionless image, cluttered background, three legs, earrings, jewelry, bracelets, rings"
+steps: 24
+refiner_start: 11
+width: 720
+height: 1280

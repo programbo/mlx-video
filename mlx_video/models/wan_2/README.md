@@ -232,7 +232,9 @@ WAN generation accepts JSON, YAML, and YML run configs with keys matching the CL
 ```yaml
 # wan-run.yaml
 model_dir: ./Wan2.2-T2V-A14B-MLX
-prompt: "Two astronauts playing chess on the surface of the moon, dramatic lighting"
+prompt:
+  - "Two astronauts playing chess on the surface of the moon, dramatic lighting"
+  - "A rover crossing a moonlit crater, dramatic lighting"
 negative_prompt: "low quality, blurry, distorted"
 width: 1280
 height: 704
@@ -248,7 +250,7 @@ dump_text_conditioning_npz: null
 dump_final_latents_npz: null
 initial_latents_npz: null
 seed: 42
-output_path: wan22_t2v.mp4
+output_path: output/wan22_t2v
 ```
 
 For Wan2.2 dual-model runs, `refiner_start` controls when generation switches
@@ -261,12 +263,15 @@ low-noise from the first step and `steps + 1` means all high-noise.
 python -m mlx_video.wan_2.generate --config wan-run.yaml
 ```
 
-JSON uses the same shape:
+JSON uses the same shape. `prompt` may be a string or a list of strings; list values generate one output per prompt. Bare config names such as `alt.yaml` are resolved from the repo `configs/` directory; explicit paths such as `./alt.yaml`, `configs/alt.yaml`, `../alt.yaml`, and absolute paths are used as written. When a config has a sibling `_default.yaml`, missing fields are filled from that file. Values in the requested config override `_default.yaml`, and explicit CLI flags override both.
 
 ```json
 {
   "model_dir": "./Wan2.2-T2V-A14B-MLX",
-  "prompt": "A slow tracking shot through a neon market at night",
+  "prompt": [
+    "A slow tracking shot through a neon market at night",
+    "A rain-soaked alley filled with neon signs"
+  ],
   "width": 1280,
   "height": 704,
   "num_frames": 81,
@@ -303,7 +308,7 @@ The NPZ bridge options are diagnostic tools for isolating where parity diverges:
 |--------|---------|-------------|
 | `--config` | — | JSON/YAML run config; repeat for sequential batch generation |
 | `--model-dir` | (required) | Path to converted MLX model directory |
-| `--prompt` | (required) | Text prompt |
+| `--prompt` | (required) | Text prompt; repeat to generate one output per prompt |
 | `--image` | — | Input image path (I2V and TI2V modes) |
 | `--negative-prompt` | config default | Negative guidance prompt |
 | `--width` | `1280` | Output width in pixels |
@@ -453,6 +458,9 @@ python -m mlx_video.wan2.generate \
 ## LoRA Support
 
 LoRA's can be used with the `--lora-high` and `--lora-low` command line switches.
+Use `--no-lora`, `--no-lora-high`, or `--no-lora-low` to clear LoRAs inherited
+from a config file. In config files, use `lora: []`, `lora_high: []`, or
+`lora_low: []` to clear inherited defaults.
 
 For example, to use a distilled Wan2.2-Lightning LoRA, use the following command. Lightning speeds up generation by using only 4 steps and a CFG scale of 1.
 

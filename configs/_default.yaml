@@ -1,0 +1,23 @@
+model_dir: /Volumes/Jove/Developer/Projects/x2v-mlx/Wan2.2-T2V-A14B-MLX
+prompt: "cinematic editorial portrait photograph of an adult woman in a backstage dressing room, broad frontal studio light, realistic skin texture, soft expression, clean composition, natural pose, high detail, shallow depth of field"
+negative_prompt: "overly vivid colors, overexposure, static, blurry details, subtitles, watermark, artwork, painting, still image, overall grey, worst quality, low quality, JPEG compression artifacts, ugly, deformed, extra fingers, poorly drawn hands, poorly drawn faces, distorted, disfigured, malformed limbs, fused fingers, motionless, cluttered background, three legs, crowded background, walking backwards"
+
+width: 640
+height: 1024
+num_frames: 1
+steps: 8
+guide_scale: 1
+shift: 5
+scheduler: euler
+sigma_schedule: comfy-simple
+fps: 24
+refiner_start: 0.125
+output_last_frame: true
+noise_source: torch
+# seed: 4000000013
+output_path: output/manual-tests
+
+lora_high:
+  - ["/Volumes/Jove/Models/loras/WAN2.2/T2V/Lightning 4Steps A14B FP16 HIGH.safetensors", 1.0]
+lora_low:
+  - ["/Volumes/Jove/Models/loras/WAN2.2/T2V/Lightning 4Steps A14B FP16 LOW.safetensors", 1.0]

@@ -25,6 +25,28 @@ from mlx_video.utils import apply_quantization, rms_norm
 PROMPTS_DIR = Path(__file__).parent / "prompts"
 
 
+def _resolve_text_encoder_paths(
+    model_path: str | Path, text_encoder_path: str | Path
+) -> Tuple[str, List[Path]]:
+    """Resolve text encoder weights and tokenizer candidates."""
+    text_encoder_root = Path(str(text_encoder_path))
+    tokenizer_candidates = []
+    if text_encoder_root.joinpath("text_encoder").is_dir():
+        tokenizer_candidates.append(text_encoder_root / "tokenizer")
+        text_encoder_path = text_encoder_root / "text_encoder"
+    else:
+        text_encoder_path = Path(str(text_encoder_path))
+
+    tokenizer_candidates.extend(
+        [
+            Path(str(model_path)) / "tokenizer",
+            Path(str(text_encoder_path)) / "tokenizer",
+            Path(str(text_encoder_path)),
+        ]
+    )
+    return str(text_encoder_path), tokenizer_candidates
+
+
 def _load_system_prompt(prompt_name: str) -> str:
     """Load a system prompt from the prompts directory."""
     prompt_path = PROMPTS_DIR / prompt_name
@@ -833,8 +855,9 @@ class LTX2TextEncoder(nn.Module):
         text_encoder_path: Optional[str] = "google/gemma-3-12b-it",
     ):
 
-        if Path(str(text_encoder_path)).joinpath("text_encoder").is_dir():
-            text_encoder_path = str(Path(text_encoder_path) / "text_encoder")
+        text_encoder_path, tokenizer_candidates = _resolve_text_encoder_paths(
+            model_path, text_encoder_path
+        )
 
         self.language_model = LanguageModel.from_pretrained(text_encoder_path)
 
@@ -877,20 +900,19 @@ class LTX2TextEncoder(nn.Module):
         # Load tokenizer
         from transformers import AutoTokenizer
 
-        tokenizer_path = model_path / "tokenizer"
-        if tokenizer_path.exists():
+        for tokenizer_path in tokenizer_candidates:
+            if tokenizer_path.exists():
+                try:
+                    self.processor = AutoTokenizer.from_pretrained(
+                        str(tokenizer_path), trust_remote_code=True
+                    )
+                    break
+                except Exception:
+                    continue
+        if self.processor is None:
             self.processor = AutoTokenizer.from_pretrained(
-                str(tokenizer_path), trust_remote_code=True
+                "google/gemma-3-12b-it", trust_remote_code=True
             )
-        else:
-            try:
-                self.processor = AutoTokenizer.from_pretrained(
-                    text_encoder_path, trust_remote_code=True
-                )
-            except Exception:
-                self.processor = AutoTokenizer.from_pretrained(
-                    "google/gemma-3-12b-it", trust_remote_code=True
-                )
         # Set left padding to match official LTX-2 text encoder
         self.processor.padding_side = "left"
 

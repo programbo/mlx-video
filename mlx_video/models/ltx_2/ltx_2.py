@@ -19,6 +19,27 @@ from mlx_video.models.ltx_2.transformer import (
 from mlx_video.utils import to_denoised
 
 
+def _indexed_safetensor_files(model_path: Path) -> List[Path]:
+    """Return indexed safetensor shards when an HF index is present."""
+    import json
+
+    index_path = model_path / "model.safetensors.index.json"
+    if not index_path.exists():
+        return sorted(model_path.glob("*.safetensors"))
+
+    with open(index_path, "r") as f:
+        index = json.load(f)
+
+    filenames = sorted(set(index.get("weight_map", {}).values()))
+    weight_files = [model_path / filename for filename in filenames]
+    missing = [path.name for path in weight_files if not path.exists()]
+    if missing:
+        raise FileNotFoundError(
+            f"{index_path} references missing shard(s): {', '.join(missing)}"
+        )
+    return weight_files
+
+
 class TransformerArgsPreprocessor:
 
     def __init__(
@@ -675,7 +696,7 @@ class LTXModel(nn.Module):
 
         weights = {}
 
-        for weight_file in model_path.glob("*.safetensors"):
+        for weight_file in _indexed_safetensor_files(model_path):
             weights.update(mx.load(str(weight_file)))
 
         sanitized = model.sanitize(weights)

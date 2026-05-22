@@ -22,6 +22,24 @@ def test_wan_parser_accepts_output_fps():
     )
 
     assert args.fps == 24
+    assert args.prompt == ["prompt"]
+
+
+def test_wan_parser_accepts_repeatable_prompt():
+    from mlx_video.models.wan_2.generate import build_parser
+
+    args = build_parser().parse_args(
+        [
+            "--model-dir",
+            "model",
+            "--prompt",
+            "first",
+            "--prompt",
+            "second",
+        ]
+    )
+
+    assert args.prompt == ["first", "second"]
 
 
 def test_wan_parser_accepts_repeatable_config():
@@ -202,6 +220,240 @@ def test_config_resolution_applies_cli_overrides(tmp_path):
     assert runs[0].output_path == "config.mp4"
 
 
+def test_config_resolution_uses_sibling_default_config_for_missing_fields(tmp_path):
+    from mlx_video.models.wan_2.generate import _resolve_generation_runs, build_parser
+
+    default = tmp_path / "_default.yaml"
+    default.write_text(
+        "\n".join(
+            [
+                "model_dir: default-model",
+                "prompt: default prompt",
+                "negative_prompt: default negative",
+                "width: 640",
+                "height: 1024",
+                "steps: 8",
+                "guide_scale: 1",
+                "output_path: default-output",
+            ]
+        )
+    )
+    path = tmp_path / "run.yaml"
+    path.write_text("prompt: run prompt\nheight: 704\n")
+
+    parser = build_parser()
+    args = parser.parse_args(["--config", str(path)])
+    runs = _resolve_generation_runs(parser, args, set())
+
+    assert runs[0].model_dir == "default-model"
+    assert runs[0].prompt == "run prompt"
+    assert runs[0].negative_prompt == "default negative"
+    assert runs[0].width == 640
+    assert runs[0].height == 704
+    assert runs[0].steps == 8
+    assert runs[0].guide_scale == 1
+    assert runs[0].output_path == "default-output"
+
+
+def test_config_resolution_precedence_with_default_config_and_cli(tmp_path):
+    from mlx_video.models.wan_2.generate import (
+        _explicit_cli_dests,
+        _resolve_generation_runs,
+        build_parser,
+    )
+
+    default = tmp_path / "_default.yaml"
+    default.write_text(
+        "\n".join(
+            [
+                "model_dir: default-model",
+                "prompt: default prompt",
+                "width: 640",
+                "height: 1024",
+            ]
+        )
+    )
+    path = tmp_path / "run.json"
+    path.write_text(
+        json.dumps(
+            {
+                "prompt": "run prompt",
+                "width": 832,
+            }
+        )
+    )
+
+    argv = ["--config", str(path), "--width", "1280"]
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    runs = _resolve_generation_runs(parser, args, _explicit_cli_dests(parser, argv))
+
+    assert runs[0].model_dir == "default-model"
+    assert runs[0].prompt == "run prompt"
+    assert runs[0].width == 1280
+    assert runs[0].height == 1024
+
+
+def test_config_resolution_applies_default_config_per_run(tmp_path):
+    from mlx_video.models.wan_2.generate import _resolve_generation_runs, build_parser
+
+    default = tmp_path / "_default.yaml"
+    default.write_text("model_dir: default-model\nprompt: default prompt\nwidth: 640\n")
+    first = tmp_path / "first.yaml"
+    second = tmp_path / "second.json"
+    first.write_text("prompt: first\n")
+    second.write_text(json.dumps({"height": 512}))
+
+    parser = build_parser()
+    args = parser.parse_args(["--config", str(first), "--config", str(second)])
+    runs = _resolve_generation_runs(parser, args, set())
+
+    assert [run.model_dir for run in runs] == ["default-model", "default-model"]
+    assert [run.prompt for run in runs] == ["first", "default prompt"]
+    assert [run.width for run in runs] == [640, 640]
+    assert [run.height for run in runs] == [704, 512]
+
+
+def test_config_resolution_expands_prompt_list_from_config(tmp_path):
+    from mlx_video.models.wan_2.generate import _resolve_generation_runs, build_parser
+
+    path = tmp_path / "run.json"
+    path.write_text(
+        json.dumps(
+            {
+                "model_dir": "model",
+                "prompt": ["first", "second"],
+                "width": 640,
+            }
+        )
+    )
+
+    parser = build_parser()
+    args = parser.parse_args(["--config", str(path)])
+    runs = _resolve_generation_runs(parser, args, set())
+
+    assert [run.prompt for run in runs] == ["first", "second"]
+    assert [run.model_dir for run in runs] == ["model", "model"]
+    assert [run.width for run in runs] == [640, 640]
+    assert [run.prompt_index for run in runs] == [0, 1]
+    assert [run.prompt_count for run in runs] == [2, 2]
+
+
+def test_config_resolution_expands_repeatable_cli_prompts():
+    from mlx_video.models.wan_2.generate import (
+        _explicit_cli_dests,
+        _resolve_generation_runs,
+        build_parser,
+    )
+
+    argv = [
+        "--model-dir",
+        "model",
+        "--prompt",
+        "first",
+        "--prompt",
+        "second",
+        "--width",
+        "640",
+    ]
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    runs = _resolve_generation_runs(parser, args, _explicit_cli_dests(parser, argv))
+
+    assert [run.prompt for run in runs] == ["first", "second"]
+    assert [run.model_dir for run in runs] == ["model", "model"]
+    assert [run.width for run in runs] == [640, 640]
+    assert [run.prompt_index for run in runs] == [0, 1]
+    assert [run.prompt_count for run in runs] == [2, 2]
+
+
+def test_iteration_output_path_accepts_prompt_template_fields(tmp_path):
+    from mlx_video.models.wan_2.generate import _iteration_output_path
+
+    path = _iteration_output_path(
+        tmp_path,
+        template="{mode}/prompt{prompt_index1}-of-{prompt_count}-{iteration1}.mp4",
+        mode="t2v",
+        seed=42,
+        steps=8,
+        shift=5,
+        width=640,
+        height=1024,
+        frames=1,
+        fps=24,
+        iteration=0,
+        prompt_index=1,
+        prompt_count=3,
+    )
+
+    assert path == tmp_path / "t2v" / "prompt2-of-3-1.mp4"
+
+
+def test_config_resolution_rejects_empty_prompt_list(tmp_path):
+    from mlx_video.models.wan_2.generate import _resolve_generation_runs, build_parser
+
+    path = tmp_path / "run.json"
+    path.write_text(json.dumps({"model_dir": "model", "prompt": []}))
+    parser = build_parser()
+    args = parser.parse_args(["--config", str(path)])
+
+    with pytest.raises(SystemExit, match="--prompt is required"):
+        _resolve_generation_runs(parser, args, set())
+
+
+def test_config_resolution_rejects_non_string_prompt_items(tmp_path):
+    from mlx_video.models.wan_2.generate import _resolve_generation_runs, build_parser
+
+    path = tmp_path / "run.json"
+    path.write_text(json.dumps({"model_dir": "model", "prompt": ["first", 2]}))
+    parser = build_parser()
+    args = parser.parse_args(["--config", str(path)])
+
+    with pytest.raises(SystemExit, match="--prompt must be a string or list of strings"):
+        _resolve_generation_runs(parser, args, set())
+
+
+def test_config_resolution_treats_bare_config_name_as_repo_config(monkeypatch, tmp_path):
+    from mlx_video.models.wan_2 import generate
+
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    default = config_dir / "_default.yaml"
+    default.write_text("model_dir: default-model\nprompt: default prompt\nwidth: 640\n")
+    path = config_dir / "alt.yaml"
+    path.write_text("prompt: alt prompt\n")
+    monkeypatch.setattr(generate, "REPO_CONFIG_DIR", config_dir)
+
+    parser = generate.build_parser()
+    args = parser.parse_args(["--config", "alt.yaml"])
+    runs = generate._resolve_generation_runs(parser, args, set())
+
+    assert runs[0].model_dir == "default-model"
+    assert runs[0].prompt == "alt prompt"
+    assert runs[0].width == 640
+
+
+def test_config_resolution_preserves_explicit_relative_config_path(
+    monkeypatch, tmp_path
+):
+    from mlx_video.models.wan_2 import generate
+
+    config_dir = tmp_path / "repo-configs"
+    config_dir.mkdir()
+    (config_dir / "alt.yaml").write_text("model_dir: wrong\nprompt: wrong\n")
+    explicit = tmp_path / "alt.yaml"
+    explicit.write_text("model_dir: explicit-model\nprompt: explicit prompt\n")
+    monkeypatch.setattr(generate, "REPO_CONFIG_DIR", config_dir)
+    monkeypatch.chdir(tmp_path)
+
+    parser = generate.build_parser()
+    args = parser.parse_args(["--config", "./alt.yaml"])
+    runs = generate._resolve_generation_runs(parser, args, set())
+
+    assert runs[0].model_dir == "explicit-model"
+    assert runs[0].prompt == "explicit prompt"
+
+
 def test_config_resolution_accepts_refiner_start(tmp_path):
     from mlx_video.models.wan_2.generate import _resolve_generation_runs, build_parser
 
@@ -334,6 +586,42 @@ def test_config_resolution_accepts_output_template(tmp_path):
     runs = _resolve_generation_runs(parser, args, set())
 
     assert runs[0].output_template == "{mode}/seed{seed}"
+
+
+def test_config_resolution_clears_inherited_loras_with_cli_flags(tmp_path):
+    from mlx_video.models.wan_2.generate import (
+        _explicit_cli_dests,
+        _resolve_generation_runs,
+        build_parser,
+    )
+
+    path = tmp_path / "run.json"
+    path.write_text(
+        json.dumps(
+            {
+                "model_dir": "model",
+                "prompt": "prompt",
+                "lora": [["generic.safetensors", 0.5]],
+                "lora_high": [["high.safetensors", 1.0]],
+                "lora_low": [["low.safetensors", 1.0]],
+            }
+        )
+    )
+
+    argv = [
+        "--config",
+        str(path),
+        "--no-lora",
+        "--no-lora-high",
+        "--no-lora-low",
+    ]
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    runs = _resolve_generation_runs(parser, args, _explicit_cli_dests(parser, argv))
+
+    assert runs[0].lora == []
+    assert runs[0].lora_high == []
+    assert runs[0].lora_low == []
 
 
 def test_config_resolution_rejects_missing_model_dir(tmp_path):
@@ -584,6 +872,30 @@ def test_t2v_lightning_preset_preserves_explicit_overrides():
     assert runs[0].noise_source == "mlx"
     assert runs[0].negative_prompt == "custom negative"
     assert runs[0].lora_high == [["custom-high.safetensors", "0.5"]]
+
+
+def test_t2v_lightning_preset_preserves_explicit_lora_clears():
+    from mlx_video.models.wan_2.generate import (
+        _explicit_cli_dests,
+        _resolve_generation_runs,
+        build_parser,
+    )
+
+    argv = [
+        "--model-dir",
+        "model",
+        "--prompt",
+        "prompt",
+        "--t2v-lightning-preset",
+        "--no-lora-high",
+        "--no-lora-low",
+    ]
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    runs = _resolve_generation_runs(parser, args, _explicit_cli_dests(parser, argv))
+
+    assert runs[0].lora_high == []
+    assert runs[0].lora_low == []
 
 
 def test_wan_parser_rejects_unknown_noise_source():
